@@ -31,153 +31,26 @@ void surface_correction_factors(
     //!Determination of surface correction factors using equating
     //!strain energy obtained by classical continuum mechanics and PD
 
-    //!Loading 1:constant strain deformation in x direction
-    for (int i = 0;i<totnode;i++){
-        disp_bar[i][0] = 0.001 * coord_bar[i][0];
-        disp_bar[i][1]=0;
+    std::vector<double> geometric_correction(totnode, 1.0);
+    for (int i = 0; i < totnode; ++i) {
+        const double horizon_left = std::min(delta_bar, coord_bar[i][0]);
+        const double horizon_right = std::min(delta_bar, coord_bar[totnode - 1][0] - coord_bar[i][0]);
+        const double visible_horizon = horizon_left + horizon_right;
+        const double theoretical_horizon = 2.0 * delta_bar;
+
+        if (visible_horizon > 1.0e-12) {
+            geometric_correction[i] = theoretical_horizon / visible_horizon;
+        }
     }
 
-    // Virtual substrate displacement (follows same affine motion)
-    /*auto get_substrate_disp = [&](double x_coord) -> double {
-        return 0.001 * x_coord;
-    };*/
-
-    //std::ofstream outfile15;
-    //outfile15.open("scr.txt");
-    for (int i = 0;i<totnode;i++){
-        stendens_mechanical[i][0] = 0.0;
-
-        //sedload1_mechanical:strain energy in x dir obtained by analytical classical continuum mechanics
-        double sedload1_mechanical =sedload1_mechanical_film;
-
-        //loop over neighbors
-        // ========================================
-        // UNIFIED LOOP: Film-Film + Film-Substrate
-        // ========================================
-        for  (int j = 0;j<numfam[i];j++){
-            const int cnode = nodefam[pointfam[i] + j - 1];
-            const int cj    = cnode - 1;
-
-            // ==============================
-            // 1. FILM-FILM BOND
-            // ==============================
-            const double dx0 = coord_bar[cj][0] - coord_bar[i][0];
-            const double dy0 = coord_bar[cj][1] - coord_bar[i][1];
-            const double idist = std::sqrt(dx0 * dx0 + dy0 * dy0);
-            //idist = sqrt(pow((coord_bar[cnode-1][0] - coord_bar[i][0]),2)+pow((coord_bar[cnode-1][1] - coord_bar[i][1]),2));
-            const double dx1 = (coord_bar[cj][0] + disp_bar[cj][0]) - (coord_bar[i][0] + disp_bar[i][0]);
-            const double dy1 = (coord_bar[cj][1] + disp_bar[cj][1]) - (coord_bar[i][1] + disp_bar[i][1]);
-            const double nlength = std::sqrt(dx1 * dx1 + dy1 * dy1);
-            //nlength = sqrt(pow((coord_bar[cnode-1][0] + disp_bar[cnode-1][0] - coord_bar[i][0] - disp_bar[i][0]),2)+pow((coord_bar[cnode-1][1] + disp_bar[cnode-1][1] - coord_bar[i][1] - disp_bar[i][1]),2));
-
-            //fac determines what fraction of each vol_barume is inside the horizon
-            if (idist<delta_bar-radij_bar) {
-                fac[i][j] = 1.0;
-                }
-            else if (idist<delta_bar+radij_bar) {
-                fac [i][j]= (delta_bar+radij_bar-idist)/(2.0*radij_bar);
-                }
-            else{
-                fac[i][j] = 0.0;
-            }
-
-            //bc_mechanical is PD bond constant: force=bc_mechanical*stretch
-            // Film-film bond stiffness
-            double bc_mechanical=bc_mechanical_film_bar;
-
-
-            //strain energy obtained by PD
-            const double stretch = (nlength - idist) / idist;
-
-            // Film-film strain energy
-            //double se_film = 0.25 * bc_mechanical * (stretch * stretch) * idist * vol_bar * fac[i][j];
-
-            // ==============================
-            // 2. FILM-SUBSTRATE INTERFACE ENERGY
-            // ==============================
-           /* double se_interface = 0.0;
-
-            // Virtual substrate displacements
-            double u_sub_i = get_substrate_disp(coord_bar[i][0]);
-            double u_sub_j = get_substrate_disp(coord_bar[cj][0]);
-
-            // Initial 2D distance to virtual substrate
-            double dx_init_sub = coord_bar[cj][0] - coord_bar[i][0];
-            double dist_init_sub = std::sqrt(dx_init_sub * dx_init_sub + h_interface_bar * h_interface_bar);
-
-            // Only compute if within horizon
-            if (dist_init_sub <= delta_bar) {
-                // Deformed distance
-                double dx_def_sub = (coord_bar[cj][0] + u_sub_j) - (coord_bar[i][0] + disp_bar[i][0]);
-                double dist_def_sub = std::sqrt(dx_def_sub * dx_def_sub + h_interface_bar * h_interface_bar);
-
-                // Interface stretch
-                double stretch_sub = (dist_def_sub - dist_init_sub) / dist_init_sub;
-
-                // Interface stiffness
-                double c_interface = bc_mechanical_film_bar * c_int_ratio;
-
-                // Interface strain energy
-                se_interface = 0.25 * c_interface * (stretch_sub * stretch_sub) * dist_init_sub * vol_bar;
-            }*/
-
-            // ==============================
-            // 3. TOTAL STRAIN ENERGY
-            // ==============================
-            //stendens_mechanical[i][0] += se_film;
-            stendens_mechanical[i][0] += 0.25 * bc_mechanical
-                                       * (stretch * stretch) * idist * vol_bar * fac[i][j];
-            //stendens_mechanical[i][0] += 0.5* 0.5 * bc_mechanical * pow(((nlength - idist) / idist),2) * idist * vol_bar * fac[i][j];
-    }
-        /*Calculation of surface correction factor in x direction
-        by finding the ratio of the analytical strain energy density value
-        to the strain energy density value obtained from PD Theory*/
-        fncst_mechanical[i][0] = sedload1_mechanical / stendens_mechanical[i][0];
+    const int prescribed_boundary_nodes = 3;
+    for (int k = 0; k < prescribed_boundary_nodes && k < totnode; ++k) {
+        const int left = k;
+        const int right = totnode - 1 - k;
+        geometric_correction[left] = 1.0;
+        if (right != left) geometric_correction[right] = 1.0;
     }
 
-    //!Loading 2:constant strain deformation in y direction
-   /* for (int i = 0;i<totnode;i++){
-        disp_bar[i][1] = 0.001 * coord_bar[i][1];
-        disp_bar[i][0]=0;
-    }
-    //std::ofstream outfile15;
-    //outfile15.open("scr.txt");
-    for (int i = 0;i<totnode;i++){
-        stendens_mechanical[i][1] = 0.0;
-        //sedload2_mechanical:strain energy in y dir obtained by classical continuum mechanics
-
-        double sedload2_mechanical =
-            (mat_id[i] == 1) ? sedload2_mechanical_substrate
-                             : sedload2_mechanical_film;
-
-        for  (int j = 0;j<numfam[i];j++){
-            const int cnode = nodefam[pointfam[i] + j - 1];
-            const int cj    = cnode - 1;
-
-            const double dx0 = coord_bar[cj][0] - coord_bar[i][0];
-            const double dy0 = coord_bar[cj][1] - coord_bar[i][1];
-            const double idist = std::sqrt(dx0 * dx0 + dy0 * dy0);
-
-            const double dx1 = (coord_bar[cj][0] + disp_bar[cj][0]) - (coord_bar[i][0] + disp_bar[i][0]);
-            const double dy1 = (coord_bar[cj][1] + disp_bar[cj][1]) - (coord_bar[i][1] + disp_bar[i][1]);
-            const double nlength = std::sqrt(dx1 * dx1 + dy1 * dy1);
-
-            double bc_mechanical;
-            if (mat_id[i] == 1 && mat_id[cj] == 1) {
-                bc_mechanical = bc_mechanical_substrate;
-            } else {
-                bc_mechanical = bc_mechanical_film_bar;
-            }
-
-            const double stretch = (nlength - idist) / idist;
-            stendens_mechanical[i][1] += 0.25 * bc_mechanical
-                                       * (stretch * stretch) * idist * vol_bar * fac[i][j];
-
-            //stendens_mechanical[i][1] += 0.5* 0.5 * bc_mechanical * pow(((nlength - idist) / idist),2) * idist * vol_bar * fac[i][j];
-    }
-
-        fncst_mechanical[i][1] = sedload2_mechanical / stendens_mechanical[i][1];
-     }*/
     //!Surface correction factors in every direction
      for (int i = 0;i<totnode;i++){
         for (int j = 0;j<numfam[i];j++){
@@ -208,7 +81,8 @@ void surface_correction_factors(
                     }*/
 
                 //!Determination of the surface correction between two material points
-                 scr_mechanical[i][j] = (fncst_mechanical[i][0] + fncst_mechanical[cnode-1][0]) / 2.0;
+                 scr_mechanical[i][j] = 0.5 * (geometric_correction[i] + geometric_correction[cnode-1]);
+                 fac[i][j] = 1.0;
                  /*scy_mechanical[i][j]  = (fncst_mechanical[i][1] + fncst_mechanical[cnode-1][1]) / 2.0;
 
                  // anisotropic correction

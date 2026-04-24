@@ -2,6 +2,7 @@
 #include <array>
 #include <fstream>
 #include <string>
+#include <filesystem>
 #include "DefectUtils.h"
 #include "DiagnosticsUtils.h"
 inline void mechanical(
@@ -33,7 +34,7 @@ inline void mechanical(
     double vol_bar,
     double bc_mechanical_film_bar, //!it should be updated for film_substrate system
     double& cn,
-     double lambda2, double h_interface_bar, double delta_bar,  // NEW
+     double c_int_ratio, double h_interface_bar, double delta_bar,  // NEW
 
     // fields (in/out)
     const std::vector<std::array<double,2>>& coord_bar,
@@ -104,15 +105,6 @@ inline void mechanical(
 )
 
 {
-// Variables used in OpenMP private(...) clauses must exist in the enclosing scope
-double idist = 0.0;
-double nlength = 0.0;
-double dforce1_mechanical = 0.0;
-double d_strain_energy = 0.0;
-double d_fracture_energy = 0.0;
-double stretch = 0.0;
-double ac_of_stress = 0.0;
-
 //helper
 auto want_snapshot = [&](int k) -> bool {
     for (int i = 0; i < write_snaps_count; ++i)
@@ -210,6 +202,10 @@ int early_stop_increment  = -1;   // will store first_crack_increment + 5
 // (written retroactively if this turns out to be the cracking increment)
 std::vector<std::vector<double>> buf_stress, buf_strain, buf_strain_energy;
 std::vector<std::vector<double>> buf_kinetic, buf_fracture, buf_damp, buf_sub, buf_total;
+const std::string ovito_output_dir = "ovito_files";
+const std::string result_output_dir = "result";
+std::filesystem::create_directories(ovito_output_dir);
+std::filesystem::create_directories(result_output_dir);
 
 //double cn = 0.01;//0.01;// cn unit:1/s
 const int max_extended_loop = 10000;  // upper bound when waiting for crack
@@ -259,6 +255,10 @@ for (int loop_counter=0;loop_counter<effective_num_loop;loop_counter++)
 );
     }
 
+    // Continue each load increment from the converged displacement field of the
+    // previous increment. Only dynamic relaxation state is reset, matching
+    // ../pery/pery.py: the solution path is continuous, but each increment
+    // starts relaxation from zero velocity.
     for (int i = 0;i<totnode;i++){
         pforceold[i][0] = 0.0;
         vel_bar[i][0] = 0.0;
@@ -292,8 +292,19 @@ for (int tt_mech = 1; (fixed_nt_mechanical ? (tt_mech <= nt_mechanical) : (tt_me
     ///bforce_mechanical[ndivx-1][0]=10.0e9*epsilonn/dx;//appres/dx;//
 
 
-   // disp_bar[0][0]=epsilonn*coord_bar[0][0];
-   // disp_bar[ndivx-1][0]=epsilonn*coord_bar[ndivx-1][0];
+    const int prescribed_boundary_nodes = 3;
+    for (int k = 0; k < prescribed_boundary_nodes && k < totnode; ++k) {
+        const int left = k;
+        const int right = totnode - 1 - k;
+
+        disp_bar[left][0] = epsilonn * coord_bar[left][0];
+        vel_bar[left][0] = 0.0;
+
+        if (right != left) {
+            disp_bar[right][0] = epsilonn * coord_bar[right][0];
+            vel_bar[right][0] = 0.0;
+        }
+    }
 
 
     //double vel_barocity=20.0;
@@ -319,10 +330,6 @@ for (int tt_mech = 1; (fixed_nt_mechanical ? (tt_mech <= nt_mechanical) : (tt_me
     }*/
 
     //!loop over the film material points
-    //#pragma omp for schedule(dynamic,8) reduction(+:sum_interface_stress,sum_interface_strain)
-   // #pragma omp for schedule(static) \
-    private(cnode, idist, nlength, dforce1_mechanical, ac_of_stress, d_strain_energy, d_fracture_energy, stretch) \
-    reduction(+:sum_interface_stress,sum_interface_strain)
     #pragma omp for schedule(static) reduction(+:sum_interface_stress,sum_interface_strain)
     for (int i = 0;i<totnode;i++){
         double dmgpar1=0.0;
@@ -331,6 +338,17 @@ for (int tt_mech = 1; (fixed_nt_mechanical ? (tt_mech <= nt_mechanical) : (tt_me
         pforce_mechanical[i][1] = 0.0;
         //
         sum_ac_of_stress[i]=0.0;
+
+        const bool prescribed_force_node =
+            (i < prescribed_boundary_nodes) ||
+            (i >= totnode - prescribed_boundary_nodes);
+        if (prescribed_force_node) {
+            dmg[i] = 0.0;
+            strain_energy[i] = 0.0;
+            substrate_energy[i] = 0.0;
+            stress[i][0] = 0.0;
+            continue;
+        }
         //sum_ad_of_stress[i]=0.0;
         //sum_bc_of_stress[i]=0.0;
         //sum_bd_of_stress[i]=0.0;
@@ -406,7 +424,22 @@ for (int tt_mech = 1; (fixed_nt_mechanical ? (tt_mech <= nt_mechanical) : (tt_me
 
         const double dirx = nx * inv_nlen;
 
-        if (degradation_model == 0) {
+        if (degradation_model < 0) {
+            // Pure elastic mode: matches the Python reference solver.
+            dforce1_mechanical =
+                bc_mechanical_film_bar * stretch * w_const * dirx;
+
+            const double s2 = stretch * stretch;
+            d_strain_energy =
+                0.25 * bc_mechanical_film_bar * s2 * idist * w_const;
+            d_fracture_energy = 0.0;
+
+            sum_ac_of_stress[i] += dforce1_mechanical * dix;
+
+            dmgpar1 += vol_bar * fac[i][j];
+            dmgpar2 += vol_bar * fac[i][j];
+        }
+        else if (degradation_model == 0) {
             // ==================================================
             // Original brittle model
             // ==================================================
@@ -457,7 +490,7 @@ for (int tt_mech = 1; (fixed_nt_mechanical ? (tt_mech <= nt_mechanical) : (tt_me
                 dmgpar1 += vol_bar * fac[i][j];
                 dmgpar2 += vol_bar * fac[i][j];
             }
-            else if ((s_history < s_c)& (abs(coord_bar[i][0])<0.45)) {
+            else if (s_history < s_c && std::abs(coord_bar[i][0] - 0.5) < 0.45) {
                 // envelope value at the history stretch
                 mu_history = (s_c - s_history) / (s_c - s_initial);
                 f_env_history = bc_mechanical_film_bar * s_initial * mu_history;
@@ -482,7 +515,7 @@ for (int tt_mech = 1; (fixed_nt_mechanical ? (tt_mech <= nt_mechanical) : (tt_me
                 dmgpar1 += mu_history * vol_bar * fac[i][j];
                 dmgpar2 += vol_bar * fac[i][j];
             }
-            else if ((abs(coord_bar[i][0])<0.45)){
+            else if (std::abs(coord_bar[i][0] - 0.5) < 0.45) {
                 fail[i][j] = 0;
                 dforce1_mechanical = 0.0;
                 d_strain_energy = 0.0;
@@ -775,16 +808,35 @@ for (int tt_mech = 1; (fixed_nt_mechanical ? (tt_mech <= nt_mechanical) : (tt_me
         }
 
 
-        // 2) local potential force from substrate (Winkler-type foundation)
-        double u_sub  = epsilonn * coord_bar[i][0];
-        double f_pot  = - lambda2 * (disp_bar[i][0] - u_sub) /** vol_bar*/;
+        double substrate_force = 0.0;
+        double substrate_energy_density = 0.0;
+        const double c_interface = bc_mechanical_film_bar * c_int_ratio;
+        for (int js = 0; js < totnode; ++js) {
+            const double dx_init_substrate = coord_bar[js][0] - coord_bar_i[0];
+            const double dist_init_substrate =
+                std::sqrt(dx_init_substrate * dx_init_substrate + h_interface_bar * h_interface_bar);
 
-        pforce_mechanical[i][0] += f_pot;
+            if (dist_init_substrate > delta_bar + 1.0e-12) continue;
 
+            const double u_substrate_j = epsilonn * coord_bar[js][0];
+            const double dx_def_substrate =
+                (coord_bar[js][0] + u_substrate_j) - (coord_bar_i[0] + disp_bar_i[0]);
+            const double dist_def_substrate =
+                std::sqrt(dx_def_substrate * dx_def_substrate + h_interface_bar * h_interface_bar);
+            const double stretch_substrate =
+                (dist_def_substrate - dist_init_substrate) / dist_init_substrate;
+            const double dir_x_substrate = dx_def_substrate / dist_def_substrate;
+
+            substrate_force += c_interface * stretch_substrate * dir_x_substrate * vol_bar;
+            substrate_energy_density +=
+                0.25 * c_interface * stretch_substrate * stretch_substrate
+                * dist_init_substrate * vol_bar;
+        }
+        pforce_mechanical[i][0] += substrate_force;
 
         dmg[i] = 1.0 - dmgpar1 / dmgpar2;
         //kinetic_energy[i]=0.5 * massvec_mechanical [i][0] * (vel_bar[i][0] * vel_bar[i][0] /*+ vel_bar[i][1] * vel_bar[i][1]*/);//energy per voulme
-        substrate_energy[i] = 0.5 * lambda2 * ( disp_bar[i][0] - u_sub)  * ( disp_bar[i][0] - u_sub); //energy density
+        substrate_energy[i] = substrate_energy_density;
         //damping_dissipation_energy[i]= 0.5 * massvec_mechanical[i][0] * cn * (pow(vel_bar[i][0],2) + pow(vel_bar[i][1],2)) * dt_mechanical_bar;//energy per voulme
         stress[i][0]=stress_coeff*sum_ac_of_stress[i]; //sigma_xx
       //stress[i][1]=stress_coeff*sum_ad_of_stress[i]; //sigma_xy
@@ -863,9 +915,14 @@ cn = 0.7*cn + 0.3*cn_opt;                 // simple low-pass
     //cn=0.01;//constant damping coefficient
     #pragma omp for schedule(static) \
     reduction(max:maxval) \
-    reduction(+:total_energy_of_system)
+    reduction(+:total_energy_of_system,total_kinetic_energy_of_system,total_damping_dissipation_energy_of_system,total_fracture_energy_of_system,total_strain_energy_of_system,total_substrate_energy_of_system)
     for (int i = 0;i<totnode;i++){
-             const double m  = massvec_mechanical[i][0];
+            const bool prescribed_boundary_node =
+                (i < prescribed_boundary_nodes) ||
+                (i >= totnode - prescribed_boundary_nodes);
+            const double prescribed_disp_x = epsilonn * coord_bar[i][0];
+            const double old_disp_bar = disp_bar[i][0];
+            const double m  = massvec_mechanical[i][0];
             // v^n (centered) from half-step vel_barocities
            // vel_bar[i][0] = 0.5 * (vel_barhalfold[i][0] + vel_barhalf[i][0]);
             const double ax = (pforce_mechanical[i][0] + bforce_mechanical[i][0]- cn * vel_bar[i][0]) / m;
@@ -905,10 +962,6 @@ cn = 0.7*cn + 0.3*cn_opt;                 // simple low-pass
                 }
             }*/
 
-            // snapshot old disp_barlacement BEFORE update
-            const double old_disp_bar = disp_bar[i][0];
-
-
           /*  vel_bar[i][0] = 0.5 * (vel_barhalfold[i][0] + vel_barhalf[i][0]);
             //vel_bar[i][1] = 0.5 * (vel_barhalfold[i][1] + vel_barhalf[i][1]);
 
@@ -925,28 +978,21 @@ cn = 0.7*cn + 0.3*cn_opt;                 // simple low-pass
 
             //!Calculation of vel_barocity of material point i
             //!by integrating the acceleration of material point i
-            vel_bar[i][0] +=  ax * dt_mechanical_bar;
-            //vel_bar[i-1][1] = vel_bar[i-1][1] + acc[i-1][1]*dt_mechanical_bar;
+            if (prescribed_boundary_node) {
+                vel_bar[i][0] = 0.0;
+                disp_bar[i][0] = prescribed_disp_x;
+            } else {
+                vel_bar[i][0] +=  ax * dt_mechanical_bar;
+                //vel_bar[i-1][1] = vel_bar[i-1][1] + acc[i-1][1]*dt_mechanical_bar;
 
-            disp_bar[i][0] +=  vel_bar[i][0] * dt_mechanical_bar;
+                disp_bar[i][0] +=  vel_bar[i][0] * dt_mechanical_bar;
+            }
            // disp_bar[i-1][1] = 0.0;//disp_bar[i-1][1] + vel_bar[i-1][1] * dt_mechanical_bar;
 
-            //  relative change when possible, otherwise absolute for convergence
-            const double absolute_error    = std::abs(disp_bar[i][0] - old_disp_bar);
-            double rc=absolute_error;
-            const double denom=std::abs(old_disp_bar);
-
-            if (denom > 1e-18) rc=absolute_error/denom;
-
-            //const double rc = std::abs(disp_bar[i][0]- old_disp_bar)/std::abs(old_disp_bar) ;
-            if (std::isfinite(rc)){
-                if (rc > maxval) maxval = rc; // reduced via max across threads
-            }
-
-            // store disp_barold for any downstream code that expects it
-            //disp_barold[i][0] = old_disp_bar;
-
             const double v0 = vel_bar[i][0]/*, v1 = vel_bar[i][1]*/;
+            const double speed = std::abs(v0);
+            if (std::isfinite(speed) && speed > maxval) maxval = speed;
+
             kinetic_energy[i] = 0.5 * m * v0*v0;
             damping_dissipation_energy[i] += /*0.5 **/ m * cn * (v0*v0 /*+ v1*v1*/) * dt_mechanical_bar;//energy per voulme
             total_energy_density[i] = strain_energy[i]+damping_dissipation_energy[i]+kinetic_energy[i]+fracture_energy[i]+substrate_energy[i]; //just remember damping_dissipation_energy is history-dependent and increasing (not conservative): it is only energy per node
@@ -1063,11 +1109,18 @@ if (track_numerical_noise) {
 }
 //!End:To check numerical noise---------------------------
 
-        //Strain definition (for 1D) for stress-strain graph
-        for (int i = 0;i<totnode-1;i++){
-            strain[i]=(disp_bar[i+1][0]-disp_bar[i][0])/dx_bar;
+        // Nodal strain definition matching ../pery/pery.py:
+        // endpoint values use the adjacent element, interior values average neighbors.
+        if (totnode > 1) {
+            strain[0] = (disp_bar[1][0] - disp_bar[0][0]) / dx_bar;
+            for (int i = 1; i < totnode - 1; ++i) {
+                const double left_strain = (disp_bar[i][0] - disp_bar[i - 1][0]) / dx_bar;
+                const double right_strain = (disp_bar[i + 1][0] - disp_bar[i][0]) / dx_bar;
+                strain[i] = 0.5 * (left_strain + right_strain);
+            }
+            strain[totnode - 1] =
+                (disp_bar[totnode - 1][0] - disp_bar[totnode - 2][0]) / dx_bar;
         }
-        strain[totnode-1]=(disp_bar[totnode-1][0]-disp_bar[totnode-2][0])/dx_bar;
 
     //!Writing ADR (inner)loop results
     // per-ADR snapshots
@@ -1103,12 +1156,9 @@ if (track_numerical_noise) {
 
     counterADR++;
 
-    // Convergence check (only active when fixed_nt_mechanical is false)
-    if (!fixed_nt_mechanical) {
-        const bool in_forced_phase = (loop_counter == 0 && counterADR < 1000);
-            if (!in_forced_phase && maxval <= tolerance) {
-                break; // converged
-            }
+    // Convergence check matching ../pery/pery.py: stop when max velocity is small.
+    if (!fixed_nt_mechanical && maxval <= tolerance) {
+        break; // converged
     }
     //outfile14 <<cn<<" ";
 }//!end of ADR (inner)loop--------------------------------------------------------
@@ -1153,6 +1203,16 @@ for (int i=0;i<ndivx;i++){
    outfile6 <<'\n';
    outfile7 <<'\n';
    outfile17 <<'\n';
+
+   {
+       std::ofstream conf_file(result_output_dir + "/conf" + std::to_string(loop_counter + 1) + ".dat");
+       conf_file << "# position displacement strain\n";
+       for (int i = 0; i < totnode; ++i) {
+           conf_file << coord_bar[i][0] << ' '
+                     << disp_bar[i][0] << ' '
+                     << strain[i] << '\n';
+       }
+   }
 
    // --- Early-stop: detect first crack ---
 if (stop_after_first_crack && first_crack_increment < 0) {
@@ -1241,7 +1301,7 @@ outfile1 << (sum_interface_strain/ndivx) << ' ' << (sum_interface_stress/ndivx) 
 //!Ovito result file-write a section-------------------------------------------------
 // Build all lines in parallel, then write once on the main thread
     // Open outfile15 HERE (not at top of loop) so it's always open when do_snap is true
-    std::ofstream outfile15("for_ovito_" + std::to_string(loop_counter + 1) + ".xyz");
+    std::ofstream outfile15(ovito_output_dir + "/for_ovito_" + std::to_string(loop_counter + 1) + ".xyz");
     outfile15 << totint << '\n' << '\n';
 
     std::vector<std::string> ovito_lines(totint);

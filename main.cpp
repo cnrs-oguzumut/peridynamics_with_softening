@@ -99,10 +99,10 @@ double epsilonn=0.0;//1.0e-5;//initial strain applied as BC
 double target_total_strain = 0.004;//0.004;  // 0.1%
 int num_loop=80;//80;//number of (outer loop) time increments
 double del_epsilonn=target_total_strain / num_loop;//1.0e-3;//strain increment
-double tolerance=1.0e-13;//criteria to stop Dynamic relaxation loop
+double tolerance=1.0e-6;//criteria to stop Dynamic relaxation loop
 int max_iteration=100000;
 //double force_coeff=1.0e-2;
-double cn = 10;
+double cn = 5.0;
 //double appres=10e6;
 int counterADR=0;//inner loop time step
 
@@ -110,8 +110,8 @@ int counterADR=0;//inner loop time step
 //!Dimensionless Params
 // Geometric
 //double L_bar = 1.0;  // By definition
-double dx_bar = length/ndivx;
-double delta_bar = 3.015*dx_bar;
+double dx_bar = length/(ndivx - 1);
+double delta_bar = 3.0*dx_bar;
 double radij_bar = dx_bar / 2.0;
 double area_bar=1;
 double vol_bar=area_bar * dx_bar;
@@ -136,8 +136,9 @@ double dt_mechanical_bar=dt_mechanical/tau;
 
 // Material - micromodulus
 double discrete_correction = m / (m + 1.0);
-double bc_mechanical_film_bar = 2*emod_film/(area_bar*pow(delta_bar,2));//*discrete_correction;
+double bc_mechanical_film_bar = 2*emod_film/(area_bar*pow(delta_bar,2))*discrete_correction;
 double force_coeff_bar=1;////////////?
+double c_int_ratio = 1.0;
 double lambda2 = 1e3;
 double dt_pd = sqrt(dx_bar / (delta_bar*delta_bar));
 double dt_lambda = 1.0 / sqrt(lambda2);
@@ -147,8 +148,9 @@ double h_interface_bar = 1.0 * dx_bar; // Vertical spacing to substrate
 
 double Gc=1e-8;//60e-10;
 
-int degradation_model = 1;
+int degradation_model = -1;
 //! Degradation model flag
+//! -1 = elastic, no damage (matches ../pery/pery.py)
 //! 0 = brittle (original sudden bond break)
 //! 1 = linear softening
 //! 2 = bilinear softening (trilinear)
@@ -228,11 +230,12 @@ bool fixed_nt_mechanical = false;  // Set to false to use convergence criterion 
 //! Flag to use fixed damping coefficient
 bool fixed_damping_coefficient = true;  // Set to false to use convergence criterion instead of fixed steps
 //! Flag to stop simulation 5 increments after first crack
-bool stop_after_first_crack = true;  // Set to false to run until end of num_loop
+bool stop_after_first_crack = false;  // Python-compatible elastic runs should complete all increments
 //! Flag for force degradation rule
 
 
-if (degradation_model == 0) cout << "Degradation model: brittle" << endl;
+if (degradation_model < 0) cout << "Degradation model: elastic (no damage)" << endl;
+else if (degradation_model == 0) cout << "Degradation model: brittle" << endl;
 else if (degradation_model == 1) cout << "Degradation model: linear softening" << endl;
 else if (degradation_model == 2) cout << "Degradation model: bilinear softening (trilinear)" << endl;
 else if (degradation_model == 3) cout << "Degradation model: Cornelissen softening" << endl;
@@ -359,7 +362,7 @@ mechanical(
     num_loop, epsilonn, del_epsilonn, dt_mechanical_bar, nt_mechanical, tolerance, max_iteration,
     /* material/const */
     stress_coeff, s_initial, s_c, s_k, beta_softening, Rd, degradation_model, vol_bar, bc_mechanical_film_bar, cn,
-    lambda2, h_interface_bar, delta_bar,
+    c_int_ratio, h_interface_bar, delta_bar,
     /* fields (arrays) */
     coord_bar, disp_bar, vel, velhalf, velhalfold, pforce_mechanical, massvec_mechanical,
     bforce_mechanical, pforceold, strain, dmg,

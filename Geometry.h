@@ -17,7 +17,7 @@ void build_Geometry(
     // ── Precompute invariants
 //    const double width  = ndivy * dx;
     const double delta2_bar = delta_bar * delta_bar;
-    const double x0     = -0.5 /** length*/ + 0.5 * dx_bar;
+    const double x0     = 0.0;
 //    const double y0     = -0.5 * width  + 0.5 * dx;
 
     //!Material points------------------------
@@ -26,8 +26,8 @@ void build_Geometry(
     int nnum = 0;
 //    for (int i = 0; i < ndivy; ++i) {
 //        const double yi = y0 + i * dx;
-        double xi = x0;
-        for (int j = 0; j < ndivx; ++j, xi += dx_bar) {
+        for (int j = 0; j < ndivx; ++j) {
+            const double xi = x0 + j * dx_bar;
             ++nnum;                         // 1-based counter
             coord_bar[nnum - 1][0] = xi;
             coord_bar[nnum - 1][1] = 0.0;
@@ -97,7 +97,7 @@ void build_Geometry(
             const double idist = std::sqrt(dxij_bar * dxij_bar + dyij_bar * dyij_bar);
 
           // double idist = sqrt(pow((coord[j][0] - coord[i][0]),2)+pow((coord[j][1] - coord[i][1]),2));
-            if (idist <= delta_bar) {
+            if (idist <= delta_bar + 1.0e-12) {
                 ++numfam[i];
                 nodefam[pointfam[i] + numfam[i] - 2] = j + 1;
             }

@@ -1,0 +1,761 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,bm}
+\usepackage{siunitx}
+\usepackage{hyperref}
+
+\title{Peridynamic Bar With Interface Coupling and Linear Softening Damage}
+\author{}
+\date{}
+
+\begin{document}
+
+\maketitle
+
+\section{Geometry and Discretization}
+
+The model is a one-dimensional peridynamic bar of length
+\begin{equation}
+L = 1 .
+\end{equation}
+The bar is discretized into \(N\) material points. The nodal coordinates are
+\begin{equation}
+x_i = i\Delta x,
+\qquad i = 0,\ldots,N-1,
+\end{equation}
+where
+\begin{equation}
+\Delta x = \frac{L}{N-1}.
+\end{equation}
+Thus the bar occupies
+\begin{equation}
+x \in [0,L].
+\end{equation}
+
+Each point has volume
+\begin{equation}
+V_i = A\Delta x,
+\end{equation}
+where the cross-sectional area is currently
+\begin{equation}
+A = 1.
+\end{equation}
+
+The peridynamic horizon is
+\begin{equation}
+\delta = m\Delta x,
+\end{equation}
+with
+\begin{equation}
+m = 3.
+\end{equation}
+A point \(j\) belongs to the family of point \(i\), denoted \(\mathcal{H}_i\), if
+\begin{equation}
+0 < |x_j-x_i| \le \delta + \varepsilon_{\mathrm{tol}},
+\end{equation}
+where a small numerical tolerance is used:
+\begin{equation}
+\varepsilon_{\mathrm{tol}} = 10^{-12}.
+\end{equation}
+This tolerance avoids losing horizon bonds due to floating-point roundoff.
+
+\section{Kinematics}
+
+The displacement of material point \(i\) is denoted by
+\begin{equation}
+u_i .
+\end{equation}
+The current position is
+\begin{equation}
+y_i = x_i + u_i.
+\end{equation}
+
+For a bond \((i,j)\), the initial bond vector is
+\begin{equation}
+\xi_{ij} = x_j - x_i,
+\end{equation}
+with initial length
+\begin{equation}
+|\xi_{ij}| = |x_j-x_i|.
+\end{equation}
+The deformed bond vector is
+\begin{equation}
+\eta_{ij} = y_j-y_i
+          = (x_j+u_j)-(x_i+u_i),
+\end{equation}
+with deformed length
+\begin{equation}
+|\eta_{ij}| = |y_j-y_i|.
+\end{equation}
+
+The bond stretch is
+\begin{equation}
+s_{ij}
+=
+\frac{|\eta_{ij}|-|\xi_{ij}|}{|\xi_{ij}|}.
+\end{equation}
+The one-dimensional bond direction is
+\begin{equation}
+n_{ij}
+=
+\frac{\eta_{ij}}{|\eta_{ij}|}.
+\end{equation}
+
+For damage, the maximum historical stretch is stored:
+\begin{equation}
+s^{\max}_{ij}(t)
+=
+\max_{\tau \le t} s_{ij}(\tau).
+\end{equation}
+
+\section{Micromodulus}
+
+The continuum one-dimensional bond-based micromodulus is
+\begin{equation}
+c_0 = \frac{2E}{A\delta^2}.
+\end{equation}
+Because the horizon contains a finite number of points, a discrete correction is applied:
+\begin{equation}
+c = c_0 \frac{m}{m+1}.
+\end{equation}
+Therefore,
+\begin{equation}
+c
+=
+\frac{2E}{A\delta^2}
+\frac{m}{m+1}.
+\end{equation}
+The current nondimensional material parameters are
+\begin{equation}
+E = 1,
+\qquad
+A = 1.
+\end{equation}
+
+\section{Surface Correction}
+
+Near boundaries, a material point has an incomplete horizon. A geometric correction factor is assigned to each point:
+\begin{equation}
+G_i
+=
+\frac{2\delta}{\delta_i^-+\delta_i^+},
+\end{equation}
+where
+\begin{equation}
+\delta_i^- = \min(\delta,x_i),
+\end{equation}
+and
+\begin{equation}
+\delta_i^+ = \min(\delta,L-x_i).
+\end{equation}
+Interior points have
+\begin{equation}
+G_i = 1,
+\end{equation}
+whereas boundary-near points have
+\begin{equation}
+G_i > 1.
+\end{equation}
+
+For the displacement-prescribed grip nodes, however, the correction is set to unity:
+\begin{equation}
+G_i = 1.
+\end{equation}
+This is done for the first and last three nodes. These nodes are externally constrained, so they are not strengthened by the free-surface correction.
+
+For a bond \((i,j)\), the bond correction is
+\begin{equation}
+G_{ij}
+=
+\frac{G_i+G_j}{2}.
+\end{equation}
+The effective integration weight is
+\begin{equation}
+w_{ij}
+=
+V_jG_{ij}.
+\end{equation}
+
+\section{Elastic Bond Force}
+
+For an intact elastic bond, the force density contribution from point \(j\) to point \(i\) is
+\begin{equation}
+f_{ij}
+=
+c\,s_{ij}\,n_{ij}\,w_{ij}.
+\end{equation}
+The total bar-bar internal force density is
+\begin{equation}
+p_i^{\mathrm{bar}}
+=
+\sum_{j\in\mathcal{H}_i}
+c\,s_{ij}\,n_{ij}\,w_{ij}.
+\end{equation}
+
+\section{Substrate and Interface Coupling}
+
+The substrate is represented by a virtual layer below the bar. The substrate has the same horizontal grid as the bar and is vertically offset by
+\begin{equation}
+h = \Delta x.
+\end{equation}
+The substrate displacement is prescribed affinely:
+\begin{equation}
+u_j^{\mathrm{sub}}
+=
+\varepsilon x_j.
+\end{equation}
+
+For the interaction between bar point \(i\) and virtual substrate point \(j\), the initial interface distance is
+\begin{equation}
+r_{ij}^{0,\mathrm{sub}}
+=
+\sqrt{(x_j-x_i)^2+h^2}.
+\end{equation}
+The current horizontal separation is
+\begin{equation}
+d_{ij}^{\mathrm{sub}}
+=
+(x_j+u_j^{\mathrm{sub}})
+-
+(x_i+u_i).
+\end{equation}
+The current interface distance is
+\begin{equation}
+r_{ij}^{\mathrm{sub}}
+=
+\sqrt{
+\left(d_{ij}^{\mathrm{sub}}\right)^2+h^2
+}.
+\end{equation}
+The interface stretch is
+\begin{equation}
+s_{ij}^{\mathrm{sub}}
+=
+\frac{
+r_{ij}^{\mathrm{sub}}-r_{ij}^{0,\mathrm{sub}}
+}{
+r_{ij}^{0,\mathrm{sub}}
+}.
+\end{equation}
+The horizontal direction cosine is
+\begin{equation}
+n_{ij}^{\mathrm{sub}}
+=
+\frac{
+d_{ij}^{\mathrm{sub}}
+}{
+r_{ij}^{\mathrm{sub}}
+}.
+\end{equation}
+
+The interface stiffness is
+\begin{equation}
+c_{\mathrm{int}}
+=
+\alpha_{\mathrm{int}}c,
+\end{equation}
+with
+\begin{equation}
+\alpha_{\mathrm{int}} = 1.
+\end{equation}
+Only virtual substrate points satisfying
+\begin{equation}
+r_{ij}^{0,\mathrm{sub}} \le \delta
+\end{equation}
+are included.
+
+The interface force density contribution is
+\begin{equation}
+p_i^{\mathrm{sub}}
+=
+\sum_j
+c_{\mathrm{int}}
+s_{ij}^{\mathrm{sub}}
+n_{ij}^{\mathrm{sub}}
+V_j.
+\end{equation}
+The total force density is
+\begin{equation}
+p_i
+=
+p_i^{\mathrm{bar}}
++
+p_i^{\mathrm{sub}}.
+\end{equation}
+
+\section{Boundary Conditions}
+
+The simulation uses affine displacement boundary conditions. At outer load step \(k\), the imposed macroscopic strain is
+\begin{equation}
+\varepsilon_k = k\Delta\varepsilon.
+\end{equation}
+The strain increment is
+\begin{equation}
+\Delta\varepsilon
+=
+\frac{\varepsilon_{\mathrm{target}}}{N_{\mathrm{load}}},
+\end{equation}
+where currently
+\begin{equation}
+\varepsilon_{\mathrm{target}} = 0.004,
+\qquad
+N_{\mathrm{load}} = 80.
+\end{equation}
+
+The first and last three nodes are displacement-prescribed:
+\begin{equation}
+u_i = \varepsilon_k x_i,
+\qquad
+i=0,1,2,
+\end{equation}
+and
+\begin{equation}
+u_i = \varepsilon_k x_i,
+\qquad
+i=N-3,N-2,N-1.
+\end{equation}
+Thus the left boundary satisfies
+\begin{equation}
+u(0)=0,
+\end{equation}
+but the neighboring grip nodes follow the same affine field:
+\begin{equation}
+u(x)=\varepsilon_k x.
+\end{equation}
+The right boundary satisfies
+\begin{equation}
+u(L)=\varepsilon_k L.
+\end{equation}
+
+The velocities of the prescribed nodes are set to zero:
+\begin{equation}
+v_i = 0.
+\end{equation}
+The imposed displacement is re-applied during the inner relaxation loop:
+\begin{equation}
+u_i = \varepsilon_k x_i.
+\end{equation}
+
+\section{Outer Load Iterations}
+
+The simulation is quasi-static and is advanced through outer load increments. At load step \(k\),
+\begin{equation}
+\varepsilon_k
+=
+\varepsilon_{k-1}
++
+\Delta\varepsilon.
+\end{equation}
+
+The converged displacement field from the previous load step is retained:
+\begin{equation}
+u_i^{k,0}
+=
+u_i^{k-1,\mathrm{conv}}
+\end{equation}
+for all unconstrained interior nodes.
+
+Only the prescribed boundary nodes are updated to the new affine displacement:
+\begin{equation}
+u_i^{k,0}
+=
+\varepsilon_k x_i.
+\end{equation}
+The artificial dynamic relaxation state is reset:
+\begin{equation}
+v_i^{k,0}=0.
+\end{equation}
+Thus the solution path is continuous in displacement, while each equilibrium solve starts from zero velocity.
+
+\section{Inner Dynamic Relaxation}
+
+For each outer load increment, an inner dynamic relaxation loop solves the equilibrium problem. The relaxation equation is
+\begin{equation}
+\rho \ddot{u}_i
++
+c_d \dot{u}_i
+=
+p_i+b_i,
+\end{equation}
+where \(b_i\) is the external body force density. In the current simulations,
+\begin{equation}
+b_i=0.
+\end{equation}
+The density and damping coefficient are
+\begin{equation}
+\rho = 1,
+\qquad
+c_d = 5.
+\end{equation}
+
+The acceleration is
+\begin{equation}
+a_i^n
+=
+\frac{
+p_i^n+b_i-c_d v_i^n
+}{
+m_i
+}.
+\end{equation}
+The mass-like coefficient is
+\begin{equation}
+m_i = \rho.
+\end{equation}
+The velocity update is explicit:
+\begin{equation}
+v_i^{n+1}
+=
+v_i^n+a_i^n\Delta t.
+\end{equation}
+The displacement update is
+\begin{equation}
+u_i^{n+1}
+=
+u_i^n+v_i^{n+1}\Delta t.
+\end{equation}
+The time step is
+\begin{equation}
+\Delta t = 5\times 10^{-4}.
+\end{equation}
+
+For prescribed boundary nodes,
+\begin{equation}
+v_i^{n+1}=0,
+\end{equation}
+and
+\begin{equation}
+u_i^{n+1}=\varepsilon_k x_i.
+\end{equation}
+
+The convergence criterion is based on the maximum velocity:
+\begin{equation}
+\max_i |v_i| \le \mathrm{tol},
+\end{equation}
+with
+\begin{equation}
+\mathrm{tol}=10^{-6}.
+\end{equation}
+
+\section{Linear Softening Damage}
+
+Damage is active with the linear softening model:
+\begin{equation}
+\texttt{degradation\_model}=1.
+\end{equation}
+
+The critical elastic stretch is
+\begin{equation}
+s_0
+=
+\sqrt{
+\frac{3G_c}{E\delta}
+}.
+\end{equation}
+The fracture energy parameter is
+\begin{equation}
+G_c = 10^{-8}.
+\end{equation}
+The softening parameter is
+\begin{equation}
+R_d = G_c.
+\end{equation}
+The complete-failure stretch is
+\begin{equation}
+s_c
+=
+1.5
+\left(
+s_0
++
+\frac{2R_d}{cs_0}
+\right).
+\end{equation}
+
+For each bond, the historical maximum stretch is
+\begin{equation}
+s_{ij}^{\max}
+=
+\max_{\tau\le t}s_{ij}(\tau).
+\end{equation}
+If
+\begin{equation}
+s_{ij}^{\max} \le s_0,
+\end{equation}
+the bond is elastic and
+\begin{equation}
+\mu_{ij}=1.
+\end{equation}
+If
+\begin{equation}
+s_0 < s_{ij}^{\max} < s_c,
+\end{equation}
+the bond is softened with
+\begin{equation}
+\mu_{ij}
+=
+\frac{s_c-s_{ij}^{\max}}{s_c-s_0}.
+\end{equation}
+The envelope force magnitude is
+\begin{equation}
+f_{\mathrm{env}}
+=
+cs_0\mu_{ij}.
+\end{equation}
+
+During continued loading on the envelope, the bond force is
+\begin{equation}
+f_{ij}
+=
+f_{\mathrm{env}} n_{ij} w_{ij}.
+\end{equation}
+During unloading or reloading, the degraded secant stiffness is
+\begin{equation}
+k_{\mathrm{unload}}
+=
+\frac{f_{\mathrm{env}}}{s_{ij}^{\max}},
+\end{equation}
+and the bond force is
+\begin{equation}
+f_{ij}
+=
+k_{\mathrm{unload}}s_{ij}n_{ij}w_{ij}.
+\end{equation}
+If
+\begin{equation}
+s_{ij}^{\max}\ge s_c,
+\end{equation}
+the bond is fully failed:
+\begin{equation}
+f_{ij}=0.
+\end{equation}
+
+\section{Damage Zone}
+
+Damage is allowed only in the central active region of the bar:
+\begin{equation}
+|x_i-0.5| < 0.45.
+\end{equation}
+Since the bar occupies \(x\in[0,1]\), this corresponds approximately to
+\begin{equation}
+0.05 < x_i < 0.95.
+\end{equation}
+This prevents damage directly inside the displacement-controlled grip regions.
+
+\section{Nodal Damage Variable}
+
+The scalar nodal damage variable is computed from the remaining bond integrity around node \(i\):
+\begin{equation}
+D_i
+=
+1
+-
+\frac{
+\sum_{j\in\mathcal{H}_i}\mu_{ij}V_j
+}{
+\sum_{j\in\mathcal{H}_i}V_j
+}.
+\end{equation}
+Thus
+\begin{equation}
+D_i=0
+\end{equation}
+means all connected bonds are intact, while
+\begin{equation}
+D_i=1
+\end{equation}
+means all connected bonds are fully failed.
+
+\section{Strain Calculation}
+
+The output strain is a post-processed local nodal strain, not the peridynamic bond stretch. The element strain is
+\begin{equation}
+\varepsilon_{i+1/2}
+=
+\frac{u_{i+1}-u_i}{x_{i+1}-x_i}.
+\end{equation}
+For a uniform grid,
+\begin{equation}
+\varepsilon_{i+1/2}
+=
+\frac{u_{i+1}-u_i}{\Delta x}.
+\end{equation}
+The nodal strain is
+\begin{equation}
+\varepsilon_0
+=
+\varepsilon_{1/2},
+\end{equation}
+\begin{equation}
+\varepsilon_{N-1}
+=
+\varepsilon_{N-3/2},
+\end{equation}
+and, for interior nodes,
+\begin{equation}
+\varepsilon_i
+=
+\frac{1}{2}
+\left(
+\varepsilon_{i-1/2}
++
+\varepsilon_{i+1/2}
+\right).
+\end{equation}
+Equivalently,
+\begin{equation}
+\varepsilon_i
+=
+\frac{1}{2}
+\left[
+\frac{u_i-u_{i-1}}{\Delta x}
++
+\frac{u_{i+1}-u_i}{\Delta x}
+\right].
+\end{equation}
+
+\section{Stress Calculation}
+
+The stress-like quantity is computed from peridynamic bond force moments:
+\begin{equation}
+\sigma_i
+=
+C_\sigma
+\sum_{j\in\mathcal{H}_i}
+f_{ij}\xi_{ij}.
+\end{equation}
+The coefficient used is
+\begin{equation}
+C_\sigma=\frac{1}{2}.
+\end{equation}
+This is a peridynamic virial-type stress measure. Before damage, a homogeneous affine solution should satisfy approximately
+\begin{equation}
+\varepsilon_i \approx \varepsilon_{\mathrm{applied}}.
+\end{equation}
+After damage begins, the stress is no longer simply \(E\varepsilon\), because the bond stiffness is degraded through \(\mu_{ij}\).
+
+\section{Energy Quantities}
+
+The elastic strain energy contribution of an intact bond is
+\begin{equation}
+W_{ij}
+=
+\frac{1}{4}
+c s_{ij}^2 |\xi_{ij}| w_{ij}.
+\end{equation}
+The factor \(1/4\) appears because pairwise bond energy is shared between interacting material points.
+
+For softened unloading or reloading,
+\begin{equation}
+W_{ij}
+=
+\frac{1}{4}
+k_{\mathrm{unload}}
+s_{ij}^2
+|\xi_{ij}|
+w_{ij}.
+\end{equation}
+
+The substrate energy is
+\begin{equation}
+W_i^{\mathrm{sub}}
+=
+\sum_j
+\frac{1}{4}
+c_{\mathrm{int}}
+\left(s_{ij}^{\mathrm{sub}}\right)^2
+r_{ij}^{0,\mathrm{sub}}
+V_j.
+\end{equation}
+
+The kinetic energy is
+\begin{equation}
+K_i
+=
+\frac{1}{2}m_i v_i^2.
+\end{equation}
+The damping dissipation is accumulated as
+\begin{equation}
+\mathcal{D}_i^{n+1}
+=
+\mathcal{D}_i^n
++
+m_i c_d v_i^2\Delta t.
+\end{equation}
+The total nodal energy density is stored as
+\begin{equation}
+E_i^{\mathrm{tot}}
+=
+W_i
++
+W_i^{\mathrm{sub}}
++
+K_i
++
+\mathcal{D}_i
++
+G_i^{\mathrm{fracture}}.
+\end{equation}
+
+\section{Output Fields}
+
+For every outer load increment, the code writes
+\begin{equation}
+\texttt{result/conf}k\texttt{.dat}.
+\end{equation}
+Each row contains
+\begin{equation}
+x_i,
+\qquad
+u_i,
+\qquad
+\varepsilon_i.
+\end{equation}
+OVITO files are written separately into
+\begin{equation}
+\texttt{ovito\_files/}.
+\end{equation}
+They contain position, displacement, damage, stress, and energy-related fields for visualization.
+
+\section{Algorithm Summary}
+
+At initialization, the grid is constructed as
+\begin{equation}
+x_i=i\Delta x.
+\end{equation}
+The families are built using
+\begin{equation}
+|x_j-x_i|\le\delta+10^{-12}.
+\end{equation}
+Surface correction factors \(G_i\) are computed, and the grip-node corrections are set to unity.
+
+For every outer load step \(k\):
+\begin{align}
+\varepsilon_k &= \varepsilon_{k-1}+\Delta\varepsilon, \\
+u_i^{k,0} &= u_i^{k-1,\mathrm{conv}}
+\quad \text{for interior nodes}, \\
+u_i^{k,0} &= \varepsilon_k x_i
+\quad \text{for prescribed boundary nodes}, \\
+v_i^{k,0} &= 0.
+\end{align}
+
+For every inner dynamic relaxation iteration:
+\begin{enumerate}
+\item compute bar-bar bond stretches \(s_{ij}\);
+\item update the historical maximum stretches \(s_{ij}^{\max}\);
+\item apply the elastic, softened, or failed bond law;
+\item compute substrate/interface forces;
+\item sum the total force density \(p_i\);
+\item update velocity and displacement;
+\item reimpose affine boundary displacements;
+\item compute strain, stress, damage, and energies;
+\item stop when
+\begin{equation}
+\max_i |v_i| \le 10^{-6}.
+\end{equation}
+\end{enumerate}
+
+After convergence, the result files are written and the next outer load increment begins.
+
+\end{document}

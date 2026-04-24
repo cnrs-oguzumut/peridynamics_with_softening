@@ -4,7 +4,21 @@ peridynamics_with_softening
 # Simulation outputs
 *.txt
 *.xyz
+result/
+ovito_files/
+strain_profiles.png
+
+# LaTeX build outputs
+*.aux
+*.log
+*.out
 
 # Local Codex context
 .dual-graph/
 .dual-graph-context/
+
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
