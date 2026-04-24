@@ -1,0 +1,10 @@
+build/
+peridynamics_with_softening
+
+# Simulation outputs
+*.txt
+*.xyz
+
+# Local Codex context
+.dual-graph/
+.dual-graph-context/
