@@ -19,7 +19,10 @@ def load_conf(path: Path) -> np.ndarray:
         data = data.reshape(1, -1)
     if data.shape[1] < 3:
         raise ValueError(f"{path} must contain position, displacement, strain columns")
-    return data[:, :3]
+    if data.shape[1] == 3:
+        damage = np.zeros((data.shape[0], 1))
+        data = np.hstack((data, damage))
+    return data[:, :4]
 
 
 def main() -> None:
@@ -44,6 +47,11 @@ def main() -> None:
         help="Also plot displacement profiles.",
     )
     parser.add_argument(
+        "--damage",
+        action="store_true",
+        help="Also plot damage profiles.",
+    )
+    parser.add_argument(
         "--save",
         type=Path,
         help="Save figure to this file instead of only showing it.",
@@ -58,21 +66,28 @@ def main() -> None:
     if not files:
         raise SystemExit(f"No conf*.dat files found in {args.result_dir}")
 
-    ncols = 2 if args.displacement else 1
+    ncols = 1 + int(args.displacement) + int(args.damage)
     fig, axes = plt.subplots(1, ncols, figsize=(6 * ncols, 4), squeeze=False)
     strain_ax = axes[0, 0]
-    disp_ax = axes[0, 1] if args.displacement else None
+    next_ax = 1
+    disp_ax = axes[0, next_ax] if args.displacement else None
+    if args.displacement:
+        next_ax += 1
+    damage_ax = axes[0, next_ax] if args.damage else None
 
     for path in files:
         data = load_conf(path)
         x = data[:, 0]
         u = data[:, 1]
         strain = data[:, 2]
+        damage = data[:, 3]
         label = f"conf {conf_index(path)}"
 
         strain_ax.plot(x, strain, label=label)
         if disp_ax is not None:
             disp_ax.plot(x, u, label=label)
+        if damage_ax is not None:
+            damage_ax.plot(x, damage, label=label)
 
     strain_ax.set_xlabel("Position")
     strain_ax.set_ylabel("Strain")
@@ -86,6 +101,14 @@ def main() -> None:
         disp_ax.set_title("Displacement Field")
         disp_ax.grid(True)
         disp_ax.legend()
+
+    if damage_ax is not None:
+        damage_ax.set_xlabel("Position")
+        damage_ax.set_ylabel("Damage")
+        damage_ax.set_title("Damage Field")
+        damage_ax.set_ylim(-0.05, 1.05)
+        damage_ax.grid(True)
+        damage_ax.legend()
 
     fig.tight_layout()
     if args.save:

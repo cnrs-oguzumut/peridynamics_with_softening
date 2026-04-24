@@ -139,7 +139,7 @@ double discrete_correction = m / (m + 1.0);
 double bc_mechanical_film_bar = 2*emod_film/(area_bar*pow(delta_bar,2))*discrete_correction;
 double force_coeff_bar=1;////////////?
 double c_int_ratio = 1.0;
-double lambda2 = 1e3;
+double lambda2 = 10.0;
 double dt_pd = sqrt(dx_bar / (delta_bar*delta_bar));
 double dt_lambda = 1.0 / sqrt(lambda2);
 double dt_bar = 0.3 * min(dt_pd, dt_lambda);
@@ -148,7 +148,7 @@ double h_interface_bar = 1.0 * dx_bar; // Vertical spacing to substrate
 
 double Gc=1e-8;//60e-10;
 
-int degradation_model = -1;
+int degradation_model = 1;
 //! Degradation model flag
 //! -1 = elastic, no damage (matches ../pery/pery.py)
 //! 0 = brittle (original sudden bond break)

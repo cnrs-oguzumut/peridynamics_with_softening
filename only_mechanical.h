@@ -1206,11 +1206,12 @@ for (int i=0;i<ndivx;i++){
 
    {
        std::ofstream conf_file(result_output_dir + "/conf" + std::to_string(loop_counter + 1) + ".dat");
-       conf_file << "# position displacement strain\n";
+       conf_file << "# position displacement strain damage\n";
        for (int i = 0; i < totnode; ++i) {
            conf_file << coord_bar[i][0] << ' '
                      << disp_bar[i][0] << ' '
-                     << strain[i] << '\n';
+                     << strain[i] << ' '
+                     << dmg[i] << '\n';
        }
    }
 
@@ -1289,7 +1290,8 @@ outfile1 << (sum_interface_strain/ndivx) << ' ' << (sum_interface_stress/ndivx) 
            << disp_bar[i][0]  << ' ' << disp_bar[i][1]  << ' '
            << (coord_bar[i][0] + disp_bar[i][0]) << ' '
            << (coord_bar[i][1] + disp_bar[i][1]) << ' '
-           << dmg[i] << ' ' << stress[i][0] << ' ' << strain_energy[i] << '\n';
+           << dmg[i] << ' ' << stress[i][0] << ' ' << strain_energy[i] << ' '
+           << strain[i] << '\n';
         ovito_lines[i] = ss.str();
     }
 
@@ -1302,7 +1304,8 @@ outfile1 << (sum_interface_strain/ndivx) << ' ' << (sum_interface_stress/ndivx) 
 // Build all lines in parallel, then write once on the main thread
     // Open outfile15 HERE (not at top of loop) so it's always open when do_snap is true
     std::ofstream outfile15(ovito_output_dir + "/for_ovito_" + std::to_string(loop_counter + 1) + ".xyz");
-    outfile15 << totint << '\n' << '\n';
+    outfile15 << totint << '\n'
+              << "# x y ux uy x_def y_def damage stress strain_energy strain\n";
 
     std::vector<std::string> ovito_lines(totint);
 
@@ -1313,7 +1316,8 @@ outfile1 << (sum_interface_strain/ndivx) << ' ' << (sum_interface_stress/ndivx) 
            << disp_bar[i][0]  << ' ' << 0.0  << ' '
            << (coord_bar[i][0] + disp_bar[i][0]) << ' '
            << 0.0 << ' '
-           << dmg[i] << ' ' << stress[i][0] << ' ' << strain_energy[i] << '\n';
+           << dmg[i] << ' ' << stress[i][0] << ' ' << strain_energy[i] << ' '
+           << strain[i] << '\n';
         ovito_lines[i] = ss.str();
     }
 
