@@ -26,29 +26,31 @@ void surface_correction_factors(
     std::vector<std::array<double,2>>&  fncst_mechanical,      // [totnode][2]
     double** scx_mechanical,        // [totnode][maxfam]
     double** scy_mechanical,        // [totnode][maxfam]
-    double** scr_mechanical         // [totnode][maxfam]
+    double** scr_mechanical,        // [totnode][maxfam]
+    bool use_geometric_surface_correction
 ) {
     //!Determination of surface correction factors using equating
     //!strain energy obtained by classical continuum mechanics and PD
 
     std::vector<double> geometric_correction(totnode, 1.0);
-    for (int i = 0; i < totnode; ++i) {
-        const double horizon_left = std::min(delta_bar, coord_bar[i][0]);
-        const double horizon_right = std::min(delta_bar, coord_bar[totnode - 1][0] - coord_bar[i][0]);
-        const double visible_horizon = horizon_left + horizon_right;
-        const double theoretical_horizon = 2.0 * delta_bar;
-
-        if (visible_horizon > 1.0e-12) {
-            geometric_correction[i] = theoretical_horizon / visible_horizon;
+    if (use_geometric_surface_correction) {
+        double min_x = coord_bar[0][0];
+        double max_x = coord_bar[0][0];
+        for (int i = 1; i < totnode; ++i) {
+            min_x = std::min(min_x, coord_bar[i][0]);
+            max_x = std::max(max_x, coord_bar[i][0]);
         }
-    }
 
-    const int prescribed_boundary_nodes = 3;
-    for (int k = 0; k < prescribed_boundary_nodes && k < totnode; ++k) {
-        const int left = k;
-        const int right = totnode - 1 - k;
-        geometric_correction[left] = 1.0;
-        if (right != left) geometric_correction[right] = 1.0;
+        for (int i = 0; i < totnode; ++i) {
+            const double horizon_left = std::min(delta_bar, coord_bar[i][0] - min_x);
+            const double horizon_right = std::min(delta_bar, max_x - coord_bar[i][0]);
+            const double visible_horizon = horizon_left + horizon_right;
+            const double theoretical_horizon = 2.0 * delta_bar;
+
+            if (visible_horizon > 1.0e-12) {
+                geometric_correction[i] = theoretical_horizon / visible_horizon;
+            }
+        }
     }
 
     //!Surface correction factors in every direction

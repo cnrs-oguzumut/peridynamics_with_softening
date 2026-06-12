@@ -3,6 +3,7 @@ void build_Geometry(
     double length,
     double dx_bar,
     double delta_bar,
+    int ghost_boundary_nodes,
     // outputs (already allocated by matrices.h)
     std::vector<std::array<double,2>>& coord_bar,
 
@@ -21,7 +22,8 @@ void build_Geometry(
 //    const double y0     = -0.5 * width  + 0.5 * dx;
 
     //!Material points------------------------
-    //internal points
+    // Physical bar points are stored first.  Any ghost/collar points are
+    // appended after them so output loops can keep writing only ndivx points.
     //Generate grid coords + material IDs
     int nnum = 0;
 //    for (int i = 0; i < ndivy; ++i) {
@@ -36,6 +38,18 @@ void build_Geometry(
           //  mat_id[nnum - 1] = (nnum < n_substrate) ? 1 : 2;
         }
    // }
+
+    for (int j = 0; j < ghost_boundary_nodes; ++j) {
+        ++nnum;
+        coord_bar[nnum - 1][0] = -static_cast<double>(ghost_boundary_nodes - j) * dx_bar;
+        coord_bar[nnum - 1][1] = 0.0;
+    }
+
+    for (int j = 0; j < ghost_boundary_nodes; ++j) {
+        ++nnum;
+        coord_bar[nnum - 1][0] = length + static_cast<double>(j + 1) * dx_bar;
+        coord_bar[nnum - 1][1] = 0.0;
+    }
 
     totint=nnum;
 

@@ -35,7 +35,7 @@ double heaviside(double t){
 #include "matrices.h"
 #include "only_mechanical.h"
 /////////////////////////////////////////////////////
-int main()
+int main(int argc, char* argv[])
 {
 
 #include "variable_initialization.h"
@@ -54,13 +54,15 @@ int ndivx=300;
 //double radij = dx / 2.0;//radij: Material point radius
 int maxfam=20;// Maximum number of material points inside a horizon of a material point
 double maxval=1.0;//for dynamic relaxation loop
+const int ghost_boundary_nodes = 3;
+const bool use_affine_ghost_boundary = true;
 //int ndivy_substrate=1;
 //int ndivy_film=1;
 //double hf=ndivy_film*dx;//height of the film
 //int ndivy=ndivy_substrate+ndivy_film;
 int totint=ndivx;
 //int nbnd_mechanical=3;//Number of divisions in the fixed disp_bar region for imaginary BC
-int totnode=ndivx;//totnode: Total number of material points
+int totnode=ndivx + (use_affine_ghost_boundary ? 2 * ghost_boundary_nodes : 0);//totnode: Total number of material points
 //int n_substrate=ndivx*ndivy_substrate;
 //double substrate_width=ndivy_substrate*dx;
 //double width=substrate_width+hf;
@@ -98,11 +100,51 @@ double stress_coeff=1.0/2.0;
 double epsilonn=0.0;//1.0e-5;//initial strain applied as BC
 double target_total_strain = 0.004;//0.004;  // 0.1%
 int num_loop=80;//80;//number of (outer loop) time increments
+int run_num_loop=num_loop;
+auto print_usage = [&]() {
+    std::cerr << "Usage: " << argv[0]
+	              << " [positive_number_of_increments_to_run]"
+	              << " [positive_number_of_load_increments]"
+	              << " [damage_model]"
+		              << " [solver_tolerance]"
+		              << " [fixed_damping_coefficient]"
+		              << " [defect_enabled]"
+		              << " [displacement_perturbation_amplitude]"
+		              << " [Rd_override]\n"
+		              << "damage_model: -1 elastic, 0 brittle, 1 linear, 2 bilinear,"
+		              << " 3 Cornelissen, 4 exponential\n"
+		              << "defect_enabled: 0 homogeneous/no disorder, 1 center defect\n"
+		              << "displacement_perturbation_amplitude: optional center-opening perturbation\n"
+		              << "Rd_override: optional positive softening/dissipation parameter\n";
+	};
+if (argc > 1) {
+    char* endptr = nullptr;
+    long requested_run_num_loop = std::strtol(argv[1], &endptr, 10);
+    if (*endptr != '\0' || requested_run_num_loop <= 0) {
+        print_usage();
+        return 1;
+    }
+    run_num_loop = static_cast<int>(requested_run_num_loop);
+}
+if (argc > 2) {
+    char* endptr = nullptr;
+    long requested_load_num_loop = std::strtol(argv[2], &endptr, 10);
+    if (*endptr != '\0' || requested_load_num_loop <= 0) {
+        print_usage();
+        return 1;
+    }
+    num_loop = static_cast<int>(requested_load_num_loop);
+}
 double del_epsilonn=target_total_strain / num_loop;//1.0e-3;//strain increment
 double tolerance=1.0e-6;//criteria to stop Dynamic relaxation loop
 int max_iteration=100000;
 //double force_coeff=1.0e-2;
 double cn = 5.0;
+bool defect_override_set = false;
+bool defect_override_value = false;
+double displacement_perturbation_amplitude = 0.0;
+bool Rd_override_set = false;
+double Rd_override_value = 0.0;
 //double appres=10e6;
 int counterADR=0;//inner loop time step
 
@@ -138,7 +180,9 @@ double dt_mechanical_bar=dt_mechanical/tau;
 double discrete_correction = m / (m + 1.0);
 double bc_mechanical_film_bar = 2*emod_film/(area_bar*pow(delta_bar,2))*discrete_correction;
 double force_coeff_bar=1;////////////?
-double c_int_ratio = 1.0;
+double c_int_ratio = 0.0;
+bool enable_substrate_coupling = false;
+bool fixed_left_pulled_right_bc = true;
 double lambda2 = 10.0;
 double dt_pd = sqrt(dx_bar / (delta_bar*delta_bar));
 double dt_lambda = 1.0 / sqrt(lambda2);
@@ -148,7 +192,79 @@ double h_interface_bar = 1.0 * dx_bar; // Vertical spacing to substrate
 
 double Gc=1e-8;//60e-10;
 
-int degradation_model = 1;
+int degradation_model = -1;
+if (argc > 3) {
+    char* endptr = nullptr;
+    long requested_degradation_model = std::strtol(argv[3], &endptr, 10);
+    if (*endptr != '\0' ||
+        requested_degradation_model < -1 ||
+        requested_degradation_model > 4) {
+        print_usage();
+        return 1;
+    }
+    degradation_model = static_cast<int>(requested_degradation_model);
+}
+if (argc > 4) {
+    char* endptr = nullptr;
+    double requested_tolerance = std::strtod(argv[4], &endptr);
+    if (*endptr != '\0' ||
+        requested_tolerance <= 0.0 ||
+        !std::isfinite(requested_tolerance)) {
+        print_usage();
+        return 1;
+    }
+    tolerance = requested_tolerance;
+}
+if (argc > 5) {
+    char* endptr = nullptr;
+    double requested_cn = std::strtod(argv[5], &endptr);
+    if (*endptr != '\0' ||
+        requested_cn < 0.0 ||
+        !std::isfinite(requested_cn)) {
+        print_usage();
+        return 1;
+    }
+    cn = requested_cn;
+}
+if (argc > 6) {
+    char* endptr = nullptr;
+    long requested_defect_enabled = std::strtol(argv[6], &endptr, 10);
+    if (*endptr != '\0' ||
+        requested_defect_enabled < 0 ||
+        requested_defect_enabled > 1) {
+        print_usage();
+        return 1;
+    }
+    defect_override_set = true;
+    defect_override_value = (requested_defect_enabled == 1);
+}
+if (argc > 7) {
+    char* endptr = nullptr;
+    double requested_perturbation = std::strtod(argv[7], &endptr);
+    if (*endptr != '\0' ||
+        requested_perturbation < 0.0 ||
+        !std::isfinite(requested_perturbation)) {
+        print_usage();
+        return 1;
+    }
+    displacement_perturbation_amplitude = requested_perturbation;
+}
+if (argc > 8) {
+    char* endptr = nullptr;
+    double requested_Rd = std::strtod(argv[8], &endptr);
+    if (*endptr != '\0' ||
+        requested_Rd <= 0.0 ||
+        !std::isfinite(requested_Rd)) {
+        print_usage();
+        return 1;
+    }
+    Rd_override_set = true;
+    Rd_override_value = requested_Rd;
+}
+if (argc > 9) {
+    print_usage();
+    return 1;
+}
 //! Degradation model flag
 //! -1 = elastic, no damage (matches ../pery/pery.py)
 //! 0 = brittle (original sudden bond break)
@@ -162,6 +278,9 @@ double s_initial = sqrt(3.0*Gc/(emod_film*delta_bar)); //1D
 
 // choose Rd from fracture energy
 double Rd = Gc;
+if (Rd_override_set) {
+    Rd = Rd_override_value;
+}
 
 // compute s_c depending on softening law
 double s_c;
@@ -179,7 +298,7 @@ else if (degradation_model == 3) {
     s_c = s_initial + 5.1361 * Rd / (bc_mechanical_film_bar * s_initial);
 }
 else if (degradation_model == 4) {
-    // Exponential → no finite s_c
+    // Exponential: no finite s_c
     // use large cutoff just for numerical purposes
     s_c = 10.0 * s_initial;
 }
@@ -214,6 +333,14 @@ cout << "s_initial = " << s_initial << endl;
 cout << "s_c = " << s_c << endl;
 cout << "s_k = " << s_k << endl;
 cout << "Rd = " << Rd << endl;
+cout << "Boundary condition: affine displacement on external ghost/collar nodes" << endl;
+cout << "Affine ghost boundary nodes per side = "
+     << (use_affine_ghost_boundary ? ghost_boundary_nodes : 0) << endl;
+cout << "Virtual substrate coupling: "
+     << (enable_substrate_coupling ? "enabled" : "disabled") << endl;
+cout << "Fixed damping coefficient cn = " << cn << endl;
+cout << "Center displacement perturbation amplitude = "
+     << displacement_perturbation_amplitude << endl;
 
 
 // choose which outer increments to snapshot
@@ -243,8 +370,9 @@ else if (degradation_model == 4) cout << "Degradation model: exponential softeni
 else cout << "Degradation model: unknown" << endl;
 
 //! Defect parameters - to nucleate crack at center
-bool introduce_defect = false;              // Enable/disable defect
-double defect_x_center = 0.0;              // x-coord_barinate of defect center (center of film)
+bool introduce_defect =
+    defect_override_set ? defect_override_value : (degradation_model >= 0);
+double defect_x_center = 0.5 * length;     // x-coord_barinate of defect center
 double defect_y_center = 0.0;              // y-coord_barinate of defect center (at interface)
 double defect_radius = dx_bar;              // Radius of defect zone in meters (2mm)
 double defect_strength_factor = 0.6;       // Reduce critical stretch to 60% in defect zone
@@ -308,7 +436,8 @@ matrices(/*input:*/totnode, maxfam,/*output:*/
 
 
 
-build_Geometry(ndivx, length, dx_bar,delta_bar,coord_bar,pointfam,numfam,nodefam,totint,totnode);
+build_Geometry(ndivx, length, dx_bar, delta_bar, ghost_boundary_nodes,
+    coord_bar, pointfam, numfam, nodefam, totint, totnode);
 
 
 surface_correction_factors(totnode, delta_bar, radij_bar, vol_bar, pi,
@@ -317,7 +446,8 @@ surface_correction_factors(totnode, delta_bar, radij_bar, vol_bar, pi,
     sedload1_mechanical_substrate, sedload1_mechanical_film,
     sedload2_mechanical_substrate, sedload2_mechanical_film,
     coord_bar, disp_bar, numfam, pointfam, nodefam, fac,
-    stendens_mechanical, fncst_mechanical, scx_mechanical, scy_mechanical, scr_mechanical);
+    stendens_mechanical, fncst_mechanical, scx_mechanical, scy_mechanical, scr_mechanical,
+    !use_affine_ghost_boundary);
 
 //for the sake of fast computations
 precompute_bond_invariants(
@@ -359,10 +489,10 @@ mechanical(
     /* geometry / sizes */
     dx_bar, ndivx, totnode, totint,
     /* time/load */
-    num_loop, epsilonn, del_epsilonn, dt_mechanical_bar, nt_mechanical, tolerance, max_iteration,
+    run_num_loop, epsilonn, del_epsilonn, dt_mechanical_bar, nt_mechanical, tolerance, max_iteration,
     /* material/const */
     stress_coeff, s_initial, s_c, s_k, beta_softening, Rd, degradation_model, vol_bar, bc_mechanical_film_bar, cn,
-    c_int_ratio, h_interface_bar, delta_bar,
+    c_int_ratio, h_interface_bar, delta_bar, enable_substrate_coupling, fixed_left_pulled_right_bc,
     /* fields (arrays) */
     coord_bar, disp_bar, vel, velhalf, velhalfold, pforce_mechanical, massvec_mechanical,
     bforce_mechanical, pforceold, strain, dmg,
@@ -390,6 +520,7 @@ mechanical(
     defect_y_center,
     defect_radius,
     defect_strength_factor,
+    displacement_perturbation_amplitude,
     stop_after_first_crack,
     first_crack_increment
 );

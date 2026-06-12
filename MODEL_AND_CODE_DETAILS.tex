@@ -1,0 +1,1599 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb}
+\usepackage{array}
+\usepackage{longtable}
+\usepackage{hyperref}
+
+\newcommand{\code}[1]{\texttt{\detokenize{#1}}}
+
+\title{Peridynamics With Softening: Model and Code Details}
+\author{}
+\date{}
+
+\begin{document}
+
+\maketitle
+\tableofcontents
+\newpage
+
+\section{Purpose of This Document}
+
+This document explains the active C++ model in the repository: the implemented
+equations, geometry, boundary conditions, softening and failure laws, numerical
+relaxation scheme, output files, and the role of each source file.
+
+The current executable is a one-dimensional tensile peridynamic bar. By default
+the left grip is fixed, the right grip is pulled in displacement control, and
+the virtual substrate coupling is disabled. Several older two-dimensional,
+thermal, and explicit film-substrate-grid ideas remain in the source as
+comments, but the active calculation uses material points on a line,
+\begin{equation}
+    y_i = 0,
+    \qquad
+    i = 0,\ldots,N-1 .
+\end{equation}
+
+\section{Source File Map}
+
+\begin{longtable}{|p{0.34\textwidth}|p{0.58\textwidth}|}
+\hline
+\textbf{File} & \textbf{Purpose} \\
+\hline
+\code{main.cpp} &
+Defines simulation parameters, allocates arrays, builds geometry and correction
+factors, calls the mechanical solver, and frees memory. \\
+\hline
+\code{Geometry.h} &
+Builds the one-dimensional nodal coordinates and the peridynamic neighbor
+families. \\
+\hline
+\code{surface_correction_factors.h} &
+Computes the end-effect correction factors used in the bond integration
+weights. \\
+\hline
+\code{matrices.h} &
+Allocates, initializes, precomputes, and frees vector and pointer-based fields. \\
+\hline
+\code{only_mechanical.h} &
+Contains the main quasi-static mechanical solve: load increments, boundary
+conditions, bond forces, softening, damage, virtual substrate coupling, dynamic
+relaxation, energy calculation, and output writing. \\
+\hline
+\code{DefectUtils.h} &
+Builds a node mask for an optional defect region. In the current force loop,
+the local defect critical stretch is not applied because that code is commented
+out. \\
+\hline
+\code{DiagnosticsUtils.h} &
+Provides helpers for diagnostic-node selection and optional diagnostic traces. \\
+\hline
+\code{time_settings.h} &
+Defines mechanical and thermal time-step constants. Only the mechanical values
+are active. \\
+\hline
+\code{variable_initialization.h} &
+Initializes scalar scratch variables used by the included-style C++ code. \\
+\hline
+\code{write_ovito_files.h} &
+Legacy OVITO writer. It is not included by the active \code{main.cpp}. \\
+\hline
+\code{plot_strain.py} &
+Post-processing script for plotting or animating \code{result/conf*.dat}. \\
+\hline
+\code{Makefile} &
+Builds the executable \code{peridynamics_with_softening}. \\
+\hline
+\end{longtable}
+
+\section{Build and Run}
+
+The executable is built with
+\begin{verbatim}
+make
+\end{verbatim}
+
+The default run is
+\begin{verbatim}
+./peridynamics_with_softening
+\end{verbatim}
+
+The executable also accepts optional command-line arguments:
+\begin{verbatim}
+./peridynamics_with_softening [increments_to_run] [load_increments] [damage_model]
+\end{verbatim}
+
+The first argument controls how many outer increments are executed. The second
+argument controls the denominator used in the strain increment,
+\begin{equation}
+    \Delta\varepsilon =
+    \frac{\varepsilon_{\mathrm{target}}}{N_{\mathrm{load}}}.
+\end{equation}
+
+The third argument selects the damage law:
+\begin{center}
+\begin{tabular}{|c|l|}
+\hline
+\textbf{damage\_model} & \textbf{Law} \\
+\hline
+\(-1\) & Elastic, no damage \\
+\(0\) & Brittle failure \\
+\(1\) & Linear softening, default \\
+\(2\) & Bilinear softening \\
+\(3\) & Cornelissen softening \\
+\(4\) & Exponential softening \\
+\hline
+\end{tabular}
+\end{center}
+
+For example,
+\begin{verbatim}
+./peridynamics_with_softening 40 80 3
+\end{verbatim}
+runs 40 increments with the load-step size of an 80-increment ramp using the
+Cornelissen softening law.
+
+\section{Geometry and Discretization}
+
+The active domain is a one-dimensional bar of length
+\begin{equation}
+    L = 1 .
+\end{equation}
+
+The current number of material points is
+\begin{equation}
+    N = 300 .
+\end{equation}
+
+The grid spacing is
+\begin{equation}
+    \Delta x = \frac{L}{N-1}.
+\end{equation}
+
+The material-point coordinates are
+\begin{equation}
+    x_i = i\Delta x,
+    \qquad
+    y_i = 0,
+    \qquad
+    i=0,\ldots,N-1 .
+\end{equation}
+
+The active cross-sectional area is
+\begin{equation}
+    A = 1,
+\end{equation}
+so the nodal volume is
+\begin{equation}
+    V = A\Delta x = \Delta x .
+\end{equation}
+
+The C++ variables are:
+\begin{center}
+\begin{tabular}{|l|l|l|}
+\hline
+\textbf{Quantity} & \textbf{Variable} & \textbf{Current value} \\
+\hline
+Length & \code{length} & \code{1} \\
+Number of points & \code{ndivx}, \code{totnode}, \code{totint} & \code{300} \\
+Area & \code{area_bar} & \code{1} \\
+Thickness & \code{thickness} & \code{1}, not active in the force law \\
+Maximum family storage & \code{maxfam} & \code{20} \\
+\hline
+\end{tabular}
+\end{center}
+
+\section{Horizon and Peridynamic Families}
+
+The peridynamic horizon is
+\begin{equation}
+    \delta = 3\Delta x .
+\end{equation}
+
+The horizon ratio is therefore
+\begin{equation}
+    m = \frac{\delta}{\Delta x} = 3 .
+\end{equation}
+
+For each material point \(i\), its family is
+\begin{equation}
+    \mathcal{H}_i =
+    \left\{
+        j \ne i :
+        |x_j-x_i| \le \delta + 10^{-12}
+    \right\}.
+\end{equation}
+
+The small \(10^{-12}\) tolerance prevents floating-point roundoff from dropping
+bonds located exactly at the horizon.
+
+The family data are stored using older one-based indexing conventions:
+\begin{itemize}
+    \item \code{numfam[i]} stores the number of neighbors of node \(i\);
+    \item \code{pointfam[i]} stores the one-based offset into \code{nodefam};
+    \item \code{nodefam} stores one-based neighbor node indices.
+\end{itemize}
+
+When the code retrieves a neighbor, it converts the stored index back to a
+zero-based C++ index.
+
+\section{Material Parameters}
+
+The current active material values are:
+\begin{center}
+\begin{tabular}{|l|l|l|}
+\hline
+\textbf{Quantity} & \textbf{Variable} & \textbf{Value} \\
+\hline
+Poisson ratio & \code{pratio} & \(1/3\) \\
+Film density & \code{rho_film} & \(1\) \\
+Substrate density & \code{rho_substrate} & \(1\), mostly inactive \\
+Film Young's modulus & \code{emod_film} & \(1\) \\
+Substrate Young's modulus & \code{emod_substrate} & \(1\), mostly inactive \\
+\hline
+\end{tabular}
+\end{center}
+
+The code computes the film plane-stress modulus
+\begin{equation}
+    \bar{E}_f =
+    \frac{E_f}{1-\nu^2},
+\end{equation}
+and the film shear modulus
+\begin{equation}
+    \mu_f =
+    \frac{E_f}{2(1+\nu)}.
+\end{equation}
+The active one-dimensional bond force law uses the peridynamic bond stiffness
+below, not the shear modulus directly.
+
+\section{Bond Micromodulus}
+
+The one-dimensional bond stiffness before discrete correction is
+\begin{equation}
+    c_0 =
+    \frac{2E}{A\delta^2}.
+\end{equation}
+
+The code applies the correction
+\begin{equation}
+    C_d = \frac{m}{m+1}.
+\end{equation}
+
+Thus the active stiffness is
+\begin{equation}
+    c =
+    \frac{2E}{A\delta^2}
+    \frac{m}{m+1}.
+\end{equation}
+
+In the code this is stored as \code{bc_mechanical_film_bar}.
+
+\section{Surface and Volume Corrections}
+
+Boundary-near nodes have incomplete horizons. The active geometric correction is
+based on the visible left and right horizon lengths:
+\begin{equation}
+    \delta_i^- = \min(\delta,x_i),
+\end{equation}
+\begin{equation}
+    \delta_i^+ = \min(\delta,L-x_i).
+\end{equation}
+
+The nodal geometric correction is
+\begin{equation}
+    G_i =
+    \frac{2\delta}{\delta_i^-+\delta_i^+}.
+\end{equation}
+
+The first and last three displacement-prescribed grip nodes are explicitly set
+to
+\begin{equation}
+    G_i = 1 .
+\end{equation}
+
+The bond correction is the average
+\begin{equation}
+    G_{ij} =
+    \frac{G_i+G_j}{2}.
+\end{equation}
+
+The separate volume-correction factor is currently
+\begin{equation}
+    \mathrm{fac}_{ij}=1 .
+\end{equation}
+
+The effective integration weight for a bar-bar bond is
+\begin{equation}
+    w_{ij} = V\,G_{ij}\,\mathrm{fac}_{ij}.
+\end{equation}
+
+\section{Kinematics}
+
+The displacement of material point \(i\) is
+\begin{equation}
+    u_i .
+\end{equation}
+
+The current position is
+\begin{equation}
+    y_i = x_i+u_i .
+\end{equation}
+
+For bond \((i,j)\), the reference separation is
+\begin{equation}
+    \xi_{ij} = x_j-x_i,
+\end{equation}
+with length
+\begin{equation}
+    r_{ij}^0 = |\xi_{ij}|.
+\end{equation}
+
+The current separation is
+\begin{equation}
+    \eta_{ij}
+    =
+    (x_j+u_j)-(x_i+u_i),
+\end{equation}
+with length
+\begin{equation}
+    r_{ij}=|\eta_{ij}|.
+\end{equation}
+
+The bond stretch is
+\begin{equation}
+    s_{ij}
+    =
+    \frac{r_{ij}-r_{ij}^0}{r_{ij}^0}.
+\end{equation}
+
+The one-dimensional direction cosine is
+\begin{equation}
+    n_{ij} =
+    \frac{\eta_{ij}}{r_{ij}}.
+\end{equation}
+
+The active implementation computes \(r_{ij}\) using the \(x\)-component only,
+which is consistent with the active one-dimensional geometry.
+
+For history-dependent damage, the code stores
+\begin{equation}
+    s_{ij}^{\max}(t)
+    =
+    \max_{\tau\le t} s_{ij}(\tau).
+\end{equation}
+This field is \code{bond_s_history[i][j]}.
+
+\section{Load Control and Boundary Conditions}
+
+The imposed macroscopic strain starts from
+\begin{equation}
+    \varepsilon_0=0 .
+\end{equation}
+
+The default target strain is
+\begin{equation}
+    \varepsilon_{\mathrm{target}} = 0.004.
+\end{equation}
+
+The default number of load increments is
+\begin{equation}
+    N_{\mathrm{load}} = 80.
+\end{equation}
+
+The strain increment is
+\begin{equation}
+    \Delta\varepsilon =
+    \frac{\varepsilon_{\mathrm{target}}}{N_{\mathrm{load}}}
+    =
+    5\times 10^{-5}
+    \quad
+    \text{for the defaults.}
+\end{equation}
+
+At outer load step \(k\),
+\begin{equation}
+    \varepsilon_k =
+    \varepsilon_{k-1}+\Delta\varepsilon.
+\end{equation}
+
+\subsection{Load Predictor}
+
+Before dynamic relaxation begins, the code keeps the previous converged
+displacement field and adds an affine predictor:
+\begin{equation}
+    u_i
+    \leftarrow
+    u_i + 0.75\,\Delta\varepsilon\,x_i .
+\end{equation}
+
+\subsection{Displacement-Prescribed Grip Nodes}
+
+The first and last three nodes are prescribed:
+\begin{equation}
+    i=0,1,2,
+    \qquad
+    i=N-3,N-2,N-1.
+\end{equation}
+
+During every inner relaxation step, these nodes are reset to
+\begin{equation}
+    u_i = 0,
+    \qquad i=0,1,2,
+\end{equation}
+and
+\begin{equation}
+    u_i = \varepsilon_k L,
+    \qquad i=N-3,N-2,N-1.
+\end{equation}
+The prescribed-node velocities are reset to
+\begin{equation}
+    v_i = 0 .
+\end{equation}
+
+Therefore the left boundary satisfies
+\begin{equation}
+    u(0)=0,
+\end{equation}
+and the right boundary satisfies
+\begin{equation}
+    u(L)=\varepsilon_k L.
+\end{equation}
+
+The active force loop skips the prescribed nodes, setting their damage, strain
+energy, substrate energy, and stress to zero.
+
+\subsection{Body Forces}
+
+The body-force array is initialized to zero and no active body force is applied:
+\begin{equation}
+    b_i=0 .
+\end{equation}
+
+The old traction-style loading code is present only as comments.
+
+\section{Virtual Substrate Coupling}
+
+The virtual substrate code path is now optional and disabled by default:
+\begin{equation}
+    \code{enable_substrate_coupling}=\code{false},
+    \qquad
+    \code{c_int_ratio}=0.
+\end{equation}
+Therefore, in the simpler tensile-bar scenario,
+\begin{equation}
+    p_i^{\mathrm{sub}}=0,
+    \qquad
+    W_i^{\mathrm{sub}}=0.
+\end{equation}
+
+If the flag is re-enabled in the source, the substrate is represented by a
+virtual affine layer, not a separate deformable mesh. It is located a vertical distance
+\begin{equation}
+    h=\Delta x
+\end{equation}
+below the bar.
+
+The virtual substrate displacement is prescribed as
+\begin{equation}
+    u_j^{\mathrm{sub}} =
+    \varepsilon_k x_j .
+\end{equation}
+
+For bar node \(i\) and virtual substrate point \(j\), the initial interface
+distance is
+\begin{equation}
+    r_{ij}^{0,\mathrm{sub}}
+    =
+    \sqrt{(x_j-x_i)^2+h^2}.
+\end{equation}
+
+The interaction is included only when
+\begin{equation}
+    r_{ij}^{0,\mathrm{sub}}
+    \le
+    \delta + 10^{-12}.
+\end{equation}
+
+The current horizontal separation is
+\begin{equation}
+    d_{ij}^{\mathrm{sub}}
+    =
+    (x_j+u_j^{\mathrm{sub}})
+    -
+    (x_i+u_i).
+\end{equation}
+
+The current interface distance is
+\begin{equation}
+    r_{ij}^{\mathrm{sub}}
+    =
+    \sqrt{
+        \left(d_{ij}^{\mathrm{sub}}\right)^2+h^2
+    }.
+\end{equation}
+
+The interface stretch is
+\begin{equation}
+    s_{ij}^{\mathrm{sub}}
+    =
+    \frac{
+        r_{ij}^{\mathrm{sub}}-r_{ij}^{0,\mathrm{sub}}
+    }{
+        r_{ij}^{0,\mathrm{sub}}
+    }.
+\end{equation}
+
+The horizontal direction cosine is
+\begin{equation}
+    n_{ij}^{\mathrm{sub}}
+    =
+    \frac{d_{ij}^{\mathrm{sub}}}{r_{ij}^{\mathrm{sub}}}.
+\end{equation}
+
+The interface stiffness is
+\begin{equation}
+    c_{\mathrm{int}} =
+    \alpha_{\mathrm{int}}c,
+    \qquad
+    \alpha_{\mathrm{int}}=1 .
+\end{equation}
+
+When enabled, the virtual substrate force contribution is
+\begin{equation}
+    p_i^{\mathrm{sub}}
+    =
+    \sum_j
+    c_{\mathrm{int}}
+    s_{ij}^{\mathrm{sub}}
+    n_{ij}^{\mathrm{sub}}
+    V .
+\end{equation}
+
+The optional substrate sum uses \(V\) directly. It does not use the bar-bar surface
+correction \(G_{ij}\).
+
+\section{Bar-Bar Bond Force}
+
+For an intact elastic bond, the force contribution from \(j\) to \(i\) is
+\begin{equation}
+    f_{ij}
+    =
+    c\,s_{ij}\,n_{ij}\,w_{ij}.
+\end{equation}
+
+The bar-bar internal force is
+\begin{equation}
+    p_i^{\mathrm{bar}}
+    =
+    \sum_{j\in\mathcal{H}_i}
+    f_{ij}.
+\end{equation}
+
+The total force used by dynamic relaxation is
+\begin{equation}
+    p_i =
+    p_i^{\mathrm{bar}}
+    +
+    p_i^{\mathrm{sub}}.
+\end{equation}
+
+\section{Damage and Softening Models}
+
+The active default is
+\begin{equation}
+    \code{degradation_model}=1,
+\end{equation}
+which means linear softening.
+
+The implemented options are:
+\begin{center}
+\begin{tabular}{|c|l|}
+\hline
+\textbf{Value} & \textbf{Meaning} \\
+\hline
+\(-1\) & Elastic, no damage \\
+\(0\) & Brittle failure \\
+\(1\) & Linear softening \\
+\(2\) & Bilinear softening \\
+\(3\) & Cornelissen softening \\
+\(4\) & Exponential softening \\
+other & Fallback to brittle-style behavior \\
+\hline
+\end{tabular}
+\end{center}
+
+\subsection{Code-to-Equation Mapping in the Bond Loop}
+
+For each directed bond from node \(i\) to neighbor \(j\), the active code first
+computes the kinematic quantities
+\begin{align}
+    r_{ij}^0 &= \code{idist}, \\
+    w_{ij} &= \code{w_const}
+           = V\,G_{ij}\,\mathrm{fac}_{ij}, \\
+    n_{ij} &= \code{dirx}
+           = \frac{\eta_{ij}}{|\eta_{ij}|}, \\
+    s_{ij} &= \code{stretch}
+           = \frac{|\eta_{ij}|-r_{ij}^0}{r_{ij}^0}.
+\end{align}
+
+The historical maximum stretch stored in \code{bond_s_history[i][j]} is updated
+before the softening branch is evaluated:
+\begin{equation}
+    \hat{s}_{ij}^{\,n+1}
+    =
+    \max\left(
+        \hat{s}_{ij}^{\,n},
+        s_{ij}^{\,n+1}
+    \right).
+\end{equation}
+Below, \(\hat{s}_{ij}\) denotes this updated history value.
+
+The code also defines a loading-envelope flag:
+\begin{equation}
+    \mathrm{onEnvelope}_{ij}
+    =
+    \left(
+        |s_{ij}-\hat{s}_{ij}| < 10^{-14}
+    \right).
+\end{equation}
+When this is true, the current stretch is equal to the historical maximum to
+roundoff tolerance, so the bond is on the active softening envelope. When it is
+false, the bond is unloading or reloading below a previously reached maximum.
+
+The force contribution added to node \(i\) is the scalar
+\begin{equation}
+    \Delta p_{ij}
+    =
+    \code{dforce1_mechanical}.
+\end{equation}
+The bar-bar force accumulator uses
+\begin{equation}
+    p_i^{\mathrm{bar}}
+    \leftarrow
+    p_i^{\mathrm{bar}}+\Delta p_{ij}.
+\end{equation}
+
+The stress moment accumulator uses the same force contribution:
+\begin{equation}
+    M_i
+    \leftarrow
+    M_i+\Delta p_{ij}\,\xi_{ij},
+\end{equation}
+and the reported stress is
+\begin{equation}
+    \sigma_i = \frac{1}{2}M_i.
+\end{equation}
+
+For nodal damage, the code accumulates two local sums:
+\begin{align}
+    A_i &\leftarrow A_i + q_{ij}V\,\mathrm{fac}_{ij}, \\
+    B_i &\leftarrow B_i + V\,\mathrm{fac}_{ij},
+\end{align}
+where \(q_{ij}=1\) for intact elastic bonds, \(q_{ij}=\mu_{ij}\) for softened
+bonds, and \(q_{ij}=0\) for fully failed bonds. The final nodal damage is
+\begin{equation}
+    D_i = 1-\frac{A_i}{B_i}.
+\end{equation}
+
+Because the family table stores directed bonds, the code also checks the
+reciprocal entry \((j,i)\). If either \(\mathrm{fail}_{ij}\) or the reciprocal
+entry has failed, the bond is treated as failed and carries no force.
+
+If \(\mathrm{fail}_{ij}=0\) when the bond loop reaches the bond, the bond is
+already fully failed and the active code uses
+\begin{align}
+    \Delta p_{ij} &= 0, \\
+    W_{ij} &= 0, \\
+    \Delta G_{ij}^{\mathrm{fracture}} &= 0, \\
+    q_{ij} &= 0.
+\end{align}
+That is, already failed bonds continue to count in the denominator \(B_i\), but
+they do not add force, strain energy, or damage numerator.
+
+\subsection{Common Elastic Contribution}
+
+Whenever a branch decides that a bond is elastic, the equations entering the
+code are
+\begin{align}
+    \Delta p_{ij}
+    &=
+    c\,s_{ij}\,w_{ij}\,n_{ij}, \\
+    W_{ij}
+    &=
+    \frac{1}{4}
+    c\,s_{ij}^{2}\,r_{ij}^0\,w_{ij}, \\
+    \Delta G_{ij}^{\mathrm{fracture}}
+    &=
+    0, \\
+    q_{ij}
+    &=
+    1 .
+\end{align}
+
+\subsection{Common Softening Contribution}
+
+For the linear, bilinear, Cornelissen, and exponential softening branches, the
+irreversibility variable is the history stretch
+\begin{equation}
+    \kappa_{ij}(t)
+    =
+    \max_{\tau\le t}s_{ij}^{+}(\tau),
+\end{equation}
+stored in the code as \code{bond_s_history[i][j]}. The prescribed envelope is
+written as
+\begin{equation}
+    f_{\mathrm{env},ij}(\kappa)
+    =
+    c\,p(\kappa).
+\end{equation}
+For the implemented softening laws, the code has
+\(p(\kappa)=s_0\mu_{ij}\) after the elastic limit. The degraded
+unloading/reloading stiffness is
+\begin{equation}
+    g(\kappa)=\frac{p(\kappa)}{\kappa},
+    \qquad
+    k_{\mathrm{unload},ij}
+    =
+    c\,g(\kappa)
+    =
+    \frac{f_{\mathrm{env},ij}}{\kappa}.
+\end{equation}
+
+If the bond is on the envelope,
+\begin{equation}
+    \Delta p_{ij}
+    =
+    f_{\mathrm{env},ij}\,w_{ij}\,n_{ij}.
+\end{equation}
+
+If the bond is unloading or reloading,
+\begin{equation}
+    \Delta p_{ij}
+    =
+    k_{\mathrm{unload},ij}
+    s_{ij}
+    w_{ij}
+    n_{ij}.
+\end{equation}
+
+In both cases, the strain-energy contribution stored by the code is the
+directed-bond version of the free energy:
+\begin{equation}
+    W_{ij}
+    =
+    \frac{1}{4}
+    c\,g(\kappa_{ij})
+    s_{ij}^{2}
+    r_{ij}^0
+    w_{ij}.
+\end{equation}
+The factor \(1/4\) appears because the implementation accumulates directed
+bond contributions at nodes; it is the pair-split counterpart of the usual
+\(\frac12 c r g(\kappa)s^2\) bond free energy.
+
+The damage numerator uses
+\begin{equation}
+    q_{ij}=\mu_{ij}.
+\end{equation}
+
+\subsection{Common Complete-Failure Contribution}
+
+For the brittle, linear, bilinear, Cornelissen, and fallback branches, once the
+code decides that a bond has completely failed, it sets
+\begin{equation}
+    \mathrm{fail}_{ij}=0,
+\end{equation}
+and uses
+\begin{align}
+    \Delta p_{ij} &= 0, \\
+    W_{ij} &= 0, \\
+    q_{ij} &= 0.
+\end{align}
+
+For the brittle, bilinear, Cornelissen, exponential, and fallback branches, the
+current code adds the branch-local complete-failure value stored in
+\code{d_fracture_energy}. For \(\code{degradation_model}=1\), the code instead
+uses the incremental history-energy update described in the linear-softening
+subsection. For linear softening at complete failure, the limiting accumulated
+value is
+\begin{equation}
+    G_{ij}^{\mathrm{fracture}}
+    =
+    \frac14 c\,s_0s_c\,r_{ij}^0w_{ij}.
+\end{equation}
+
+\subsection{Critical Stretch}
+
+The initial critical stretch is
+\begin{equation}
+    s_0 =
+    \sqrt{
+        \frac{3G_c}{E\delta}
+    }.
+\end{equation}
+
+The current fracture parameter is
+\begin{equation}
+    G_c = 10^{-8},
+\end{equation}
+and the softening energy parameter is
+\begin{equation}
+    R_d = G_c.
+\end{equation}
+
+The complete-failure stretch \(s_c\) depends on the selected model.
+
+For linear softening,
+\begin{equation}
+    s_c =
+    1.5
+    \left(
+        s_0+
+        \frac{2R_d}{cs_0}
+    \right).
+\end{equation}
+
+For bilinear softening,
+\begin{equation}
+    s_c =
+    s_0+
+    \frac{2R_d}{cs_0}.
+\end{equation}
+
+For the Cornelissen law,
+\begin{equation}
+    s_c =
+    s_0+
+    \frac{5.1361R_d}{cs_0}.
+\end{equation}
+
+For the exponential law,
+\begin{equation}
+    s_c = 10s_0
+\end{equation}
+is used as a numerical reference cutoff in \code{main.cpp}; the active
+exponential branch now uses this value as the complete-failure cutoff.
+
+The bilinear transition stretch is
+\begin{equation}
+    s_k =
+    s_0 + 0.15(s_c-s_0),
+\end{equation}
+with residual ratio
+\begin{equation}
+    \beta = 0.25 .
+\end{equation}
+
+\subsection{Elastic Model}
+
+For \(\code{degradation_model}<0\), the bond remains elastic:
+\begin{equation}
+    f_{ij}
+    =
+    c\,s_{ij}\,n_{ij}\,w_{ij}.
+\end{equation}
+
+\subsection{Brittle Model}
+
+For \(\code{degradation_model}=0\), the bond is elastic while
+\begin{equation}
+    s_{ij} \le s_0 .
+\end{equation}
+
+If
+\begin{equation}
+    s_{ij} > s_0,
+\end{equation}
+then
+\begin{equation}
+    f_{ij}=0,
+    \qquad
+    \mathrm{fail}_{ij}=0 .
+\end{equation}
+
+The fracture-energy accumulator receives
+\begin{equation}
+    G_{ij}^{\mathrm{fracture}}
+    =
+    \frac{1}{4}
+    c\,s_0^2\,r_{ij}^0\,w_{ij}.
+\end{equation}
+
+\subsection{Linear Softening Model}
+
+If
+\begin{equation}
+    s_{ij}^{\max} \le s_0
+\end{equation}
+the bond is elastic.
+
+If
+\begin{equation}
+    s_0 < s_{ij}^{\max} < s_c,
+\end{equation}
+the degradation factor is
+\begin{equation}
+    \mu_{ij}
+    =
+    \frac{s_c-s_{ij}^{\max}}{s_c-s_0}.
+\end{equation}
+
+The envelope force magnitude is
+\begin{equation}
+    f_{\mathrm{env}}
+    =
+    cs_0\mu_{ij}.
+\end{equation}
+
+On the loading envelope,
+\begin{equation}
+    f_{ij}
+    =
+    f_{\mathrm{env}}n_{ij}w_{ij}.
+\end{equation}
+
+For unloading or reloading below the historical maximum, the secant stiffness is
+\begin{equation}
+    k_{\mathrm{unload}}
+    =
+    \frac{f_{\mathrm{env}}}{s_{ij}^{\max}},
+\end{equation}
+and
+\begin{equation}
+    f_{ij}
+    =
+    k_{\mathrm{unload}}s_{ij}n_{ij}w_{ij}.
+\end{equation}
+
+If
+\begin{equation}
+    s_{ij}^{\max}\ge s_c,
+\end{equation}
+the bond is fully failed:
+\begin{equation}
+    f_{ij}=0,
+    \qquad
+    \mathrm{fail}_{ij}=0 .
+\end{equation}
+
+For \(\code{degradation_model}=1\), fracture energy is stored incrementally with
+a per-bond history value \(\code{bond_fracture_energy_history[i][j]}\). During
+partial softening the code computes
+\begin{equation}
+    W_{\mathrm{input}}
+    =
+    \frac12 c s_0^2
+    +
+    \frac12 c s_0(1+\mu_{ij})(s_{ij}^{\max}-s_0),
+\end{equation}
+\begin{equation}
+    W_{\mathrm{recoverable}}
+    =
+    \frac12 f_hs_{ij}^{\max},
+    \qquad
+    f_h=cs_0\mu_{ij},
+\end{equation}
+and
+\begin{equation}
+    G_{\mathrm{now}}
+    =
+    \frac12
+    \left(
+        W_{\mathrm{input}}-W_{\mathrm{recoverable}}
+    \right)
+    r_{ij}^0w_{ij}.
+\end{equation}
+Only the positive increment
+\begin{equation}
+    \Delta G
+    =
+    G_{\mathrm{now}}-G_{\mathrm{history}}
+\end{equation}
+is added to \(\code{fracture_energy[i]}\), and then \(G_{\mathrm{history}}\) is
+updated. At complete failure, the total target value is
+\begin{equation}
+    G_{\mathrm{total}}
+    =
+    \frac14 c s_0s_c r_{ij}^0w_{ij}.
+\end{equation}
+
+\subsection{Bilinear Softening Model}
+
+For \(s_0<s_{ij}^{\max}<s_k\),
+\begin{equation}
+    \mu_{ij}
+    =
+    1
+    -
+    (1-\beta)
+    \frac{s_{ij}^{\max}-s_0}{s_k-s_0}.
+\end{equation}
+
+For \(s_k\le s_{ij}^{\max}<s_c\),
+\begin{equation}
+    \mu_{ij}
+    =
+    \beta
+    \frac{s_c-s_{ij}^{\max}}{s_c-s_k}.
+\end{equation}
+
+Then the same envelope and unloading/reloading formulas are used.
+
+\subsection{Cornelissen Softening Model}
+
+Define
+\begin{equation}
+    \eta =
+    \frac{s_{ij}^{\max}-s_0}{s_c-s_0}.
+\end{equation}
+
+The degradation factor is
+\begin{equation}
+    \mu_{ij}
+    =
+    \left(1+(3\eta)^3\right)e^{-6.93\eta}
+    -
+    28\eta e^{-6.93}.
+\end{equation}
+
+The code clamps this value:
+\begin{equation}
+    \mu_{ij}
+    =
+    \max(0,\mu_{ij}).
+\end{equation}
+
+\subsection{Exponential Softening Model}
+
+The exponential law uses
+\begin{equation}
+    \alpha =
+    \frac{cs_0}{R_d},
+\end{equation}
+and
+\begin{equation}
+    \mu_{ij}
+    =
+    \exp\left[
+        -\alpha
+        \left(s_{ij}^{\max}-s_0\right)
+    \right].
+\end{equation}
+
+If
+\begin{equation}
+    s_{ij}^{\max}\ge s_c,
+\end{equation}
+the bond is fully failed:
+\begin{equation}
+    f_{ij}=0,
+    \qquad
+    \mathrm{fail}_{ij}=0 .
+\end{equation}
+
+\section{Nodal Damage Variable}
+
+The nodal damage-like variable is
+\begin{equation}
+    D_i
+    =
+    1
+    -
+    \frac{
+        \sum_{j\in\mathcal{H}_i}
+        \mu_{ij}V\,\mathrm{fac}_{ij}
+    }{
+        \sum_{j\in\mathcal{H}_i}
+        V\,\mathrm{fac}_{ij}
+    }.
+\end{equation}
+
+For intact elastic bonds, \(\mu_{ij}=1\). For softened bonds, the current
+history-based \(\mu_{ij}\) is used. Fully failed bonds contribute to the
+denominator but not the numerator.
+
+Thus \(D_i=0\) means all counted bonds around node \(i\) are intact; larger
+values indicate local softening or bond failure. Grip nodes are assigned
+\(D_i=0\) because their force loop is skipped.
+
+\section{Stress Measure}
+
+The stress-like output is a peridynamic force-moment measure:
+\begin{equation}
+    \sigma_i
+    =
+    C_\sigma
+    \sum_{j\in\mathcal{H}_i}
+    f_{ij}\xi_{ij}.
+\end{equation}
+
+The active coefficient is
+\begin{equation}
+    C_\sigma=\frac{1}{2}.
+\end{equation}
+
+The optional virtual substrate force is included in equilibrium only when the
+source flag
+\begin{equation}
+    \code{enable_substrate_coupling}
+\end{equation}
+is true. It is not included in this bar-bar stress moment.
+
+\section{Output Strain}
+
+The saved strain is a finite-difference post-processing field, not the
+peridynamic bond stretch.
+
+At the left endpoint,
+\begin{equation}
+    \varepsilon_0 =
+    \frac{u_1-u_0}{\Delta x}.
+\end{equation}
+
+For interior nodes,
+\begin{equation}
+    \varepsilon_i
+    =
+    \frac{1}{2}
+    \left[
+        \frac{u_i-u_{i-1}}{\Delta x}
+        +
+        \frac{u_{i+1}-u_i}{\Delta x}
+    \right].
+\end{equation}
+
+At the right endpoint,
+\begin{equation}
+    \varepsilon_{N-1}
+    =
+    \frac{u_{N-1}-u_{N-2}}{\Delta x}.
+\end{equation}
+
+\section{Energy Quantities}
+
+For an elastic intact bond, the strain-energy contribution at node \(i\) is
+\begin{equation}
+    W_{ij}
+    =
+    \frac{1}{4}
+    c\,s_{ij}^2\,r_{ij}^0\,w_{ij}.
+\end{equation}
+
+For softened unloading or reloading, the code uses
+\begin{equation}
+    W_{ij}
+    =
+    \frac{1}{4}
+    k_{\mathrm{unload}}
+    s_{ij}^2
+    r_{ij}^0
+    w_{ij}.
+\end{equation}
+
+For \(\code{degradation_model}=1\), fracture energy is accumulated
+incrementally from the bond history. The code stores a previous per-bond value
+\(\code{bond_fracture_energy_history[i][j]}\), computes the current history
+value \(G_{\mathrm{now}}\), and adds only
+\begin{equation}
+    \Delta G = G_{\mathrm{now}}-G_{\mathrm{history}}
+\end{equation}
+when this increment is positive. This prevents the same history energy from
+being added repeatedly during ADR iterations. In the current code, the other
+damage branches keep their branch-local complete-failure increments.
+
+If substrate coupling is enabled, the virtual substrate energy is
+\begin{equation}
+    W_i^{\mathrm{sub}}
+    =
+    \sum_j
+    \frac{1}{4}
+    c_{\mathrm{int}}
+    \left(s_{ij}^{\mathrm{sub}}\right)^2
+    r_{ij}^{0,\mathrm{sub}}
+    V.
+\end{equation}
+For the current default tensile-bar scenario, this term is identically zero.
+
+The kinetic energy is
+\begin{equation}
+    K_i =
+    \frac{1}{2}m_i v_i^2.
+\end{equation}
+
+The current lumped mass-like value is
+\begin{equation}
+    m_i=1.
+\end{equation}
+
+Damping dissipation is accumulated as
+\begin{equation}
+    \mathcal{D}_i^{n+1}
+    =
+    \mathcal{D}_i^n
+    +
+    m_i c_d v_i^2\Delta t .
+\end{equation}
+
+The total stored nodal energy density is
+\begin{equation}
+    E_i^{\mathrm{tot}}
+    =
+    W_i
+    +
+    W_i^{\mathrm{sub}}
+    +
+    K_i
+    +
+    \mathcal{D}_i
+    +
+    G_i^{\mathrm{fracture}}.
+\end{equation}
+
+\section{Dynamic Relaxation Solver}
+
+Each outer load increment is equilibrated by an explicit damped dynamic
+relaxation loop. The active equation is
+\begin{equation}
+    m_i\ddot{u}_i
+    +
+    c_d\dot{u}_i
+    =
+    p_i+b_i.
+\end{equation}
+
+Since \(b_i=0\),
+\begin{equation}
+    m_i\ddot{u}_i
+    +
+    c_d\dot{u}_i
+    =
+    p_i.
+\end{equation}
+
+The acceleration used in the code is
+\begin{equation}
+    a_i^n =
+    \frac{
+        p_i^n+b_i-c_dv_i^n
+    }{
+        m_i
+    }.
+\end{equation}
+
+The active update is
+\begin{equation}
+    v_i^{n+1}
+    =
+    v_i^n+a_i^n\Delta t,
+\end{equation}
+\begin{equation}
+    u_i^{n+1}
+    =
+    u_i^n+v_i^{n+1}\Delta t.
+\end{equation}
+
+The mechanical time step is
+\begin{equation}
+    \Delta t = \mathrm{dt\_mechanical\_bar}.
+\end{equation}
+
+It is computed from
+\begin{equation}
+    \tau =
+    \frac{L}{\sqrt{E/\rho}},
+\end{equation}
+and
+\begin{equation}
+    \mathrm{dt\_mechanical\_bar}
+    =
+    \frac{\mathrm{dt\_mechanical}}{\tau}.
+\end{equation}
+
+With the current defaults \(L=E=\rho=1\),
+\begin{equation}
+    \tau=1,
+    \qquad
+    \mathrm{dt\_mechanical\_bar}
+    =
+    5\times 10^{-4}.
+\end{equation}
+
+The code also computes \code{dt_pd}, \code{dt_lambda}, and \code{dt_bar}, but
+the active mechanical update uses \code{dt_mechanical_bar}.
+
+\section{Damping and Convergence}
+
+The default damping coefficient is
+\begin{equation}
+    c_d = 5.
+\end{equation}
+
+This is the active path because
+\begin{equation}
+    \code{fixed_damping_coefficient}=\code{true}.
+\end{equation}
+
+If adaptive damping is enabled, the code estimates
+\begin{equation}
+    c_{\mathrm{opt}}
+    =
+    2\sqrt{
+        \frac{\mathrm{num}}{\mathrm{den}}
+    },
+\end{equation}
+caps the result, and smooths it as
+\begin{equation}
+    c_d
+    \leftarrow
+    0.7c_d+0.3c_{\mathrm{opt}}.
+\end{equation}
+
+The relaxation loop stops when
+\begin{equation}
+    \max_i |v_i|
+    \le
+    10^{-6}.
+\end{equation}
+
+The maximum iteration count is
+\begin{equation}
+    100000.
+\end{equation}
+
+\section{Algorithm Summary}
+
+The initialization sequence is:
+\begin{enumerate}
+    \item Read constants from \code{main.cpp}, \code{variable_initialization.h},
+    and \code{time_settings.h}.
+    \item Allocate arrays with \code{matrices}.
+    \item Build the one-dimensional grid and family list with
+    \code{build_Geometry}.
+    \item Compute surface correction factors with
+    \code{surface_correction_factors}.
+    \item Precompute bond geometry and weights with
+    \code{precompute_bond_invariants}.
+    \item Initialize displacement and velocity fields to zero.
+    \item Set the lumped mass-like coefficient to \(1\) for every node.
+    \item Call \code{mechanical}.
+\end{enumerate}
+
+For each outer load increment:
+\begin{enumerate}
+    \item Increase the applied strain by \(\Delta\varepsilon\).
+    \item Add the affine predictor \(0.75\Delta\varepsilon x_i\).
+    \item Reset velocities and old force state for dynamic relaxation.
+    \item Run the inner relaxation loop until convergence.
+    \item Write final fields for the increment.
+    \item Optionally detect first crack and stop five increments later.
+\end{enumerate}
+
+For each dynamic relaxation iteration:
+\begin{enumerate}
+    \item Reimpose displacement and zero velocity on the first and last three nodes.
+    \item Compute bar-bar bond stretches and forces.
+    \item Update historical maximum stretch for each bond.
+    \item Apply the selected degradation law.
+    \item Add virtual substrate/interface force only if substrate coupling is enabled.
+    \item Compute nodal damage, stress, strain energy, and substrate energy.
+    \item Update damping if adaptive damping is enabled.
+    \item Update velocity and displacement explicitly.
+    \item Compute kinetic energy, damping dissipation, total energy, and convergence speed.
+    \item Compute finite-difference output strain.
+    \item Write optional diagnostics or snapshot buffers.
+\end{enumerate}
+
+\section{Output Files}
+
+\subsection{Configuration Files}
+
+For every outer increment, the code writes
+\begin{equation}
+    \code{result/confK.dat}.
+\end{equation}
+
+Each row contains
+\begin{equation}
+    x_i,\qquad u_i,\qquad \varepsilon_i,\qquad D_i.
+\end{equation}
+
+\subsection{OVITO Files}
+
+For every increment, the code writes
+\begin{equation}
+    \code{ovito_files/for_ovito_K.xyz}.
+\end{equation}
+
+The columns are
+\begin{equation}
+    x,\ y,\ u_x,\ u_y,\ x_{\mathrm{def}},\ y_{\mathrm{def}},\
+    D,\ \sigma,\ W,\ \varepsilon .
+\end{equation}
+
+Because the active model is one-dimensional, \(y\), \(u_y\), and
+\(y_{\mathrm{def}}\) are written as zero.
+
+\subsection{Final ADR Field Matrices}
+
+The final converged fields for each increment are written to:
+\begin{itemize}
+    \item \code{Final_ADR_stress.txt}
+    \item \code{Final_ADR_strain.txt}
+    \item \code{Final_ADR_strain_energy.txt}
+    \item \code{Final_ADR_kinetic_energy.txt}
+    \item \code{Final_ADR_fracture_energy.txt}
+    \item \code{Final_ADR_damping_dissipation_energy.txt}
+    \item \code{Final_ADR_substrate_energy.txt}
+\end{itemize}
+
+Rows correspond to outer increments; columns correspond to nodes.
+
+\subsection{Energy Histories}
+
+System-level energy histories during the ADR iterations are written to:
+\begin{itemize}
+    \item \code{total_energy_density_matrix.txt}
+    \item \code{total_kinetic_energy_density_matrix.txt}
+    \item \code{total_damping_dissipation_energy_density_matrix.txt}
+    \item \code{total_fracture_energy_density_matrix.txt}
+    \item \code{total_strain_energy_density_matrix.txt}
+    \item \code{total_substrate_energy_density_matrix.txt}
+\end{itemize}
+
+Each row is one outer increment; each column is one ADR iteration.
+
+\subsection{Stress Convergence}
+
+When \code{track_stress_convergence} is true, the code writes
+\begin{equation}
+    \code{convergence_of_stress.txt}.
+\end{equation}
+
+It tracks \(\sigma\) at the node closest to
+\begin{equation}
+    x=0.3.
+\end{equation}
+
+\subsection{Snapshots and Diagnostics}
+
+The snapshot mechanism can write all ADR-step fields for selected increments:
+\begin{itemize}
+    \item \code{stressK.txt}
+    \item \code{strainK.txt}
+    \item \code{strain_energyK.txt}
+    \item \code{kinetic_energyK.txt}
+    \item \code{fracture_energyK.txt}
+    \item \code{damping_dissipation_energyK.txt}
+    \item \code{substrate_energyK.txt}
+    \item \code{total_energy_densityK.txt}
+\end{itemize}
+
+By default, \code{write_snaps} is set to a value not reached by ordinary runs.
+
+If \code{track_numerical_noise} is enabled, diagnostic stress, force,
+displacement, and maximum-stretch traces are also written for selected nodes.
+
+\section{First-Crack Early Stop}
+
+The early-stop mode is disabled by default:
+\begin{equation}
+    \code{stop_after_first_crack}=\code{false}.
+\end{equation}
+
+When enabled, first crack is detected when any node satisfies
+\begin{equation}
+    D_i > 0.
+\end{equation}
+
+The simulation then stops five increments after that first detection.
+
+\section{Defect Handling}
+
+\code{DefectUtils.h} can mark nodes in a circular defect region:
+\begin{equation}
+    (x_i-x_c)^2+(y_i-y_c)^2
+    \le
+    r_{\mathrm{defect}}^2.
+\end{equation}
+
+It computes a reduced critical stretch
+\begin{equation}
+    s_0^{\mathrm{defect}}
+    =
+    s_0
+    \times
+    \mathrm{defect\_strength\_factor}.
+\end{equation}
+
+The default defect values are:
+\begin{center}
+\begin{tabular}{|l|l|l|}
+\hline
+\textbf{Quantity} & \textbf{Variable} & \textbf{Value} \\
+\hline
+Enabled & \code{introduce_defect} & \code{false} \\
+Center & \code{defect_x_center}, \code{defect_y_center} & \((0,0)\) \\
+Radius & \code{defect_radius} & \(\Delta x\) \\
+Strength factor & \code{defect_strength_factor} & \(0.6\) \\
+\hline
+\end{tabular}
+\end{center}
+
+Important implementation detail: the force loop currently comments out the code
+that would replace \(s_0\) with \(s_0^{\mathrm{defect}}\). Therefore enabling
+the defect mask alone does not change the active bond failure or softening law.
+
+\section{Post-Processing}
+
+The Python script \code{plot_strain.py} reads \code{result/conf*.dat}. Example
+uses:
+\begin{verbatim}
+python3 plot_strain.py --steps 1 20 80
+python3 plot_strain.py --steps 1 20 80 --displacement --damage
+python3 plot_strain.py --movie peridynamics.mp4 --damage --strain-zoom
+\end{verbatim}
+
+The script expects the columns
+\begin{equation}
+    x,\qquad u,\qquad \varepsilon,\qquad D.
+\end{equation}
+If an older file has only three columns, it fills damage with zeros.
+
+\section{Active Versus Dormant Code}
+
+\begin{longtable}{|p{0.35\textwidth}|p{0.57\textwidth}|}
+\hline
+\textbf{Dormant item} & \textbf{Current status} \\
+\hline
+Two-dimensional film/substrate grid &
+Commented out; the active model uses \(y=0\) for all nodes. \\
+\hline
+Thermal solve &
+Thermal constants exist, but no active thermal loop is called. \\
+\hline
+Explicit traction boundary conditions &
+Present as comments; active loading is fixed-left and pulled-right displacement control. \\
+\hline
+Separate deformable substrate points &
+Disabled by default; optional virtual affine substrate coupling remains in the solver. \\
+\hline
+\code{write_ovito_files.h} &
+Not included by active \code{main.cpp}. \\
+\hline
+Defect critical stretch &
+The mask exists, but the local critical-stretch substitution is commented out. \\
+\hline
+\code{dt_bar} stability estimate &
+Computed for reference, but active ADR uses \code{dt_mechanical_bar}. \\
+\hline
+Half-step ADR variant &
+Older half-step velocity update code is commented out. \\
+\hline
+\code{heaviside} helper &
+Defined in \code{main.cpp}, but unused. \\
+\hline
+\end{longtable}
+
+\section{Important Implementation Notes}
+
+\begin{enumerate}
+    \item The active model is mostly nondimensional and uses variables with the
+    suffix \code{_bar}.
+    \item The pair \((i,j)\) and the pair \((j,i)\) have separate entries in
+    \code{fail} and \code{bond_s_history}.
+    \item The stress output includes only bar-bar bond force moments, not the
+    optional virtual substrate force.
+    \item Grip nodes are skipped by the force loop; damage can occur in the
+    free bar bonds once the selected law reaches its damage threshold.
+    \item Grip nodes are excluded from the active force loop and report zero
+    stress and damage from that path.
+    \item \code{maxfam} must be large enough for every family. With \(m=3\) in
+    one dimension, \code{maxfam=20} is comfortably sufficient.
+    \item Generated files in \code{result/}, \code{ovito_files/}, and the energy
+    text files are run products rather than source files.
+\end{enumerate}
+
+\end{document}

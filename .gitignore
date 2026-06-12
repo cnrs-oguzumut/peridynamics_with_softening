@@ -4,14 +4,19 @@ peridynamics_with_softening
 # Simulation outputs
 *.txt
 *.xyz
+*.mp4
+*_profiles*.png
+*_zoom*.png
 result/
 ovito_files/
+runs/
 strain_profiles.png
 
 # LaTeX build outputs
 *.aux
 *.log
 *.out
+*.toc
 
 # Local Codex context
 .dual-graph/
